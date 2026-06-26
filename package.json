@@ -1,0 +1,22 @@
+{
+  "name": "plynth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plynth — diagramming workspace (a Dioschub product)",
+  "license": "MIT",
+  "workspaces": [
+    "shared",
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "build": "npm run build -w @plynth/shared && npm run build -w @plynth/backend && npm run build -w @plynth/frontend",
+    "start": "node backend/dist/main.js",
+    "dev": "npm run build -w @plynth/shared && concurrently -n shared,api,web -c blue,green,magenta \"npm:dev -w @plynth/shared\" \"npm:dev -w @plynth/backend\" \"npm:dev -w @plynth/frontend\"",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
