@@ -119,6 +119,7 @@ export function ProjectScreen() {
                     doc={d}
                     onOpen={() => nav(`/p/${p.id}/d/${d.id}`)}
                     onRename={(nm) => updateDoc(p.id, d.id, { name: nm })}
+                    onDescribe={(ds) => updateDoc(p.id, d.id, { desc: ds })}
                     onDelete={() => setConfirmDoc(d)}
                   />
                 ))}

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { DIAGRAM_TYPE_MAP } from '@plynth/shared';
 import { useWorkspace } from './WorkspaceProvider';
@@ -18,6 +18,20 @@ export function DocumentScreen() {
   const [menu, setMenu] = useState(false);
   const [saved, setSaved] = useState('');
 
+  // Cmd/Ctrl+S saves the open document (and preempts the browser's save-page
+  // dialog). Registered once; a ref keeps it calling the latest save closure.
+  const saveRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        saveRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   if (!p || !doc) {
     return (
       <AppShell crumbs={[{ label: 'Projects', to: '/' }, { label: 'Not found', active: true }]}>
@@ -33,6 +47,7 @@ export function DocumentScreen() {
     setSaved(clockLabel());
     setTimeout(() => setSaved(''), 2200);
   };
+  saveRef.current = save;
 
   const docActions = (
     <div style={{ position: 'relative', marginLeft: 4 }}>

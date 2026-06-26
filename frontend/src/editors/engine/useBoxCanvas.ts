@@ -21,6 +21,18 @@ export interface BoxCanvasOpts {
   onCreateFrame?: (x: number, y: number) => string | null;
   frameRectOf?: (id: string) => Rect | null;
   onMoveFrame?: (id: string, x: number, y: number) => void;
+  /** descendants (nodes + sub-frames) geometrically inside a frame, with their
+   *  current positions — captured at drag start so they move with the frame. */
+  frameContentsOf?: (id: string) => Array<{ kind: 'node' | 'frame'; id: string; x: number; y: number }>;
+  /** atomic move of a frame together with its captured contents, in ONE model
+   *  patch (separate per-child callbacks would clobber each other's update). */
+  onMoveFrameGroup?: (
+    id: string,
+    x: number,
+    y: number,
+    nodes: Array<{ id: string; x: number; y: number }>,
+    frames: Array<{ id: string; x: number; y: number }>,
+  ) => void;
   onResizeFrame?: (id: string, w: number, h: number) => void;
   onDelete: (sel: Sel) => void;
   /** is some inline edit active? (suppress keyboard shortcuts) */
@@ -29,7 +41,7 @@ export interface BoxCanvasOpts {
 
 type Act =
   | { t: 'move'; id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean }
-  | { t: 'frame-move'; id: string; sx: number; sy: number; ox: number; oy: number }
+  | { t: 'frame-move'; id: string; sx: number; sy: number; ox: number; oy: number; kids: Array<{ kind: 'node' | 'frame'; id: string; ox: number; oy: number }> }
   | { t: 'frame-resize'; id: string; sx: number; sy: number; ow: number; oh: number }
   | { t: 'link'; fromId: string }
   | { t: 'palette'; kind: string; sx: number; sy: number; moved: boolean }
@@ -88,7 +100,14 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
       } else if (a.t === 'frame-move') {
         const dx = (e.clientX - a.sx) / opt.vp.scale;
         const dy = (e.clientY - a.sy) / opt.vp.scale;
-        opt.onMoveFrame?.(a.id, a.ox + dx, a.oy + dy);
+        const fx = a.ox + dx, fy = a.oy + dy;
+        if (opt.onMoveFrameGroup) {
+          const nodes = a.kids.filter((k) => k.kind === 'node').map((k) => ({ id: k.id, x: k.ox + dx, y: k.oy + dy }));
+          const frames = a.kids.filter((k) => k.kind === 'frame').map((k) => ({ id: k.id, x: k.ox + dx, y: k.oy + dy }));
+          opt.onMoveFrameGroup(a.id, fx, fy, nodes, frames);
+        } else {
+          opt.onMoveFrame?.(a.id, fx, fy);
+        }
       } else if (a.t === 'frame-resize') {
         const dw = (e.clientX - a.sx) / opt.vp.scale;
         const dh = (e.clientY - a.sy) / opt.vp.scale;
@@ -186,7 +205,8 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
     if (isPan()) { vp.beginPan(e); return; }
     setSel({ kind: 'frame', id });
     const r = ref.current.frameRectOf?.(id);
-    act.current = { t: 'frame-move', id, sx: e.clientX, sy: e.clientY, ox: r?.x ?? 0, oy: r?.y ?? 0 };
+    const kids = (ref.current.frameContentsOf?.(id) ?? []).map((k) => ({ kind: k.kind, id: k.id, ox: k.x, oy: k.y }));
+    act.current = { t: 'frame-move', id, sx: e.clientX, sy: e.clientY, ox: r?.x ?? 0, oy: r?.y ?? 0, kids };
   }, [vp, spacePan, o.tool]); // eslint-disable-line
 
   const frameResizeDown = useCallback((id: string, e: RPointerEvent) => {

@@ -11,6 +11,7 @@ import {
   autoArrange,
   bbox,
   center,
+  descendants,
   perp,
   rectEdge,
   useBoxCanvas,
@@ -74,6 +75,14 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
     const f = cm.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
   }, [cm.frames]);
+  const frameContentsOf = useCallback((id: string) => {
+    const elemBounds = cm.components.map((c) => { const r = geom.get(String(c.id))!; return { id: String(c.id), x: r.x, y: r.y, w: r.w, h: r.h }; });
+    const { elems, frames: subFrames } = descendants(id, cm.frames, elemBounds);
+    const out: Array<{ kind: 'node' | 'frame'; id: string; x: number; y: number }> = [];
+    for (const eid of elems) { const c = cm.components.find((x) => String(x.id) === eid); if (c) out.push({ kind: 'node', id: eid, x: c.x, y: c.y }); }
+    for (const fid of subFrames) { const f = cm.frames.find((x) => x.id === fid); if (f) out.push({ kind: 'frame', id: fid, x: f.x, y: f.y }); }
+    return out;
+  }, [cm.components, cm.frames, geom]);
   const hitNode = useCallback((wx: number, wy: number, exclude?: string) => {
     for (let i = cm.components.length - 1; i >= 0; i--) {
       const c = cm.components[i];
@@ -110,7 +119,15 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
     onCreateNode: (kind, x, y) => createComp(kind, x, y),
     onCreateFrame: (x, y) => createFrame(x, y),
     frameRectOf,
-    onMoveFrame: (id, x, y) => setFrames((fs) => fs.map((f) => (f.id === id ? { ...f, x, y } : f))),
+    frameContentsOf,
+    onMoveFrameGroup: (id, x, y, mNodes, mFrames) => {
+      const nm = new Map(mNodes.map((n) => [n.id, n]));
+      const fm = new Map(mFrames.map((f) => [f.id, f]));
+      patch({
+        components: cm.components.map((c) => { const m = nm.get(String(c.id)); return m ? { ...c, x: m.x, y: m.y } : c; }),
+        frames: cm.frames.map((f) => (f.id === id ? { ...f, x, y } : (fm.has(f.id) ? { ...f, ...fm.get(f.id)! } : f))),
+      });
+    },
     onResizeFrame: (id, w, h) => setFrames((fs) => fs.map((f) => (f.id === id ? { ...f, w, h } : f))),
     onDelete: (sel) => {
       if (!sel) return;

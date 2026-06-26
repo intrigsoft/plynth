@@ -11,6 +11,7 @@ import {
   autoArrange,
   bbox,
   center,
+  descendants,
   perp,
   rectEdge,
   useBoxCanvas,
@@ -67,6 +68,14 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
     const f = erd.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
   }, [erd.frames]);
+  const frameContentsOf = useCallback((id: string) => {
+    const elemBounds = erd.entities.map((e) => { const r = geom.get(String(e.id))!; return { id: String(e.id), x: r.x, y: r.y, w: r.w, h: r.h }; });
+    const { elems, frames: subFrames } = descendants(id, erd.frames, elemBounds);
+    const out: Array<{ kind: 'node' | 'frame'; id: string; x: number; y: number }> = [];
+    for (const eid of elems) { const e = erd.entities.find((x) => String(x.id) === eid); if (e) out.push({ kind: 'node', id: eid, x: e.x, y: e.y }); }
+    for (const fid of subFrames) { const f = erd.frames.find((x) => x.id === fid); if (f) out.push({ kind: 'frame', id: fid, x: f.x, y: f.y }); }
+    return out;
+  }, [erd.entities, erd.frames, geom]);
   const hitNode = useCallback((wx: number, wy: number, exclude?: string) => {
     for (let i = erd.entities.length - 1; i >= 0; i--) {
       const e = erd.entities[i];
@@ -102,7 +111,15 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
     onCreateNode: (kind, x, y) => createEntity(kind, x, y),
     onCreateFrame: (x, y) => createFrame(x, y),
     frameRectOf,
-    onMoveFrame: (id, x, y) => setFrames((fs) => fs.map((f) => (f.id === id ? { ...f, x, y } : f))),
+    frameContentsOf,
+    onMoveFrameGroup: (id, x, y, mNodes, mFrames) => {
+      const nm = new Map(mNodes.map((n) => [n.id, n]));
+      const fm = new Map(mFrames.map((f) => [f.id, f]));
+      patch({
+        entities: erd.entities.map((e) => { const m = nm.get(String(e.id)); return m ? { ...e, x: m.x, y: m.y } : e; }),
+        frames: erd.frames.map((f) => (f.id === id ? { ...f, x, y } : (fm.has(f.id) ? { ...f, ...fm.get(f.id)! } : f))),
+      });
+    },
     onResizeFrame: (id, w, h) => setFrames((fs) => fs.map((f) => (f.id === id ? { ...f, w, h } : f))),
     onDelete: (sel) => {
       if (!sel) return;

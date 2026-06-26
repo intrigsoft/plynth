@@ -14,6 +14,7 @@ import {
   autoArrange,
   bbox,
   center,
+  descendants,
   nodeFaces,
   perp,
   rectEdge,
@@ -86,6 +87,14 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     const f = dep.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
   }, [dep.frames]);
+  const frameContentsOf = useCallback((id: string) => {
+    const elemBounds = dep.nodes.map((n) => { const r = geom.get(String(n.id))!; return { id: String(n.id), x: r.x, y: r.y, w: r.w, h: r.h }; });
+    const { elems, frames: subFrames } = descendants(id, dep.frames, elemBounds);
+    const out: Array<{ kind: 'node' | 'frame'; id: string; x: number; y: number }> = [];
+    for (const eid of elems) { const n = dep.nodes.find((x) => String(x.id) === eid); if (n) out.push({ kind: 'node', id: eid, x: n.x, y: n.y }); }
+    for (const fid of subFrames) { const f = dep.frames.find((x) => x.id === fid); if (f) out.push({ kind: 'frame', id: fid, x: f.x, y: f.y }); }
+    return out;
+  }, [dep.nodes, dep.frames, geom]);
   const hitNode = useCallback((wx: number, wy: number, exclude?: string) => {
     for (let i = dep.nodes.length - 1; i >= 0; i--) {
       const n = dep.nodes[i];
@@ -123,7 +132,15 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     onCreateNode: (kind, x, y) => createNode(kind, x, y),
     onCreateFrame: (x, y) => createFrame(x, y),
     frameRectOf,
-    onMoveFrame: (id, x, y) => setFrames((fs) => fs.map((f) => (f.id === id ? { ...f, x, y } : f))),
+    frameContentsOf,
+    onMoveFrameGroup: (id, x, y, mNodes, mFrames) => {
+      const nm = new Map(mNodes.map((n) => [n.id, n]));
+      const fm = new Map(mFrames.map((f) => [f.id, f]));
+      patch({
+        nodes: dep.nodes.map((n) => { const m = nm.get(String(n.id)); return m ? { ...n, x: m.x, y: m.y } : n; }),
+        frames: dep.frames.map((f) => (f.id === id ? { ...f, x, y } : (fm.has(f.id) ? { ...f, ...fm.get(f.id)! } : f))),
+      });
+    },
     onResizeFrame: (id, w, h) => setFrames((fs) => fs.map((f) => (f.id === id ? { ...f, w, h } : f))),
     onDelete: (sel) => {
       if (!sel) return;
