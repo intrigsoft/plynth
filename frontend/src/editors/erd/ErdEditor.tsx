@@ -456,7 +456,7 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
   return (
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
-      onFit={fitAll} onAutoLayout={() => void autoLayout()} assistantDocName={docName}
+      onFit={fitAll} onAutoLayout={() => void autoLayout()}
       onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); bc.bgDown(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
       world={

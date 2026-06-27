@@ -1,7 +1,6 @@
-import { useState } from 'react';
 import type { MouseEvent as RMouseEvent, PointerEvent, ReactNode } from 'react';
 import type { Viewport } from './useViewport';
-import { DioschubBadge, EditorAssistant, RailDivider, SelectToggle, Tool, ZoomCluster } from './ui';
+import { DioschubBadge, RailDivider, SelectToggle, Tool, ZoomCluster } from './ui';
 
 export function EditorShell({
   vp,
@@ -16,7 +15,6 @@ export function EditorShell({
   cursor,
   world,
   hud,
-  assistantDocName,
 }: {
   vp: Viewport;
   tool: Tool;
@@ -30,10 +28,7 @@ export function EditorShell({
   cursor?: string;
   world: ReactNode;
   hud?: ReactNode;
-  assistantDocName: string;
 }) {
-  const [assistant, setAssistant] = useState(true);
-
   return (
     <div style={{ flex: 1, display: 'flex', minHeight: 0, background: 'var(--surface)' }}>
       {/* tool rail */}
@@ -66,14 +61,7 @@ export function EditorShell({
         {hud}
         <ZoomCluster pct={Math.round(vp.scale * 100)} onIn={() => vp.zoomBy(1.2)} onOut={() => vp.zoomBy(1 / 1.2)} onFit={onFit} onAutoLayout={onAutoLayout} accent={accent} />
         <DioschubBadge />
-        {!assistant && (
-          <button onClick={() => setAssistant(true)} style={{ position: 'absolute', top: 14, right: 14, background: accent, color: '#fff', border: 'none', borderRadius: 9, padding: '7px 12px', fontSize: 13, fontWeight: 600, zIndex: 20 }}>
-            Assistant
-          </button>
-        )}
       </div>
-
-      {assistant && <EditorAssistant docName={assistantDocName} accent={accent} onClose={() => setAssistant(false)} />}
     </div>
   );
 }

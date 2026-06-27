@@ -1,5 +1,4 @@
 import type { CSSProperties, ReactNode } from 'react';
-import { Close, Sparkle } from '../../lib/icons';
 
 export type Tool = 'select' | 'pan';
 
@@ -291,33 +290,5 @@ export function PillDelete({
       <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
       {label && <span>{label}</span>}
     </button>
-  );
-}
-
-/* ---- Editor-embedded assistant (static chrome, Phase 1) ------------------ */
-export function EditorAssistant({ docName, accent, onClose }: { docName: string; accent: string; onClose: () => void }) {
-  return (
-    <aside style={{ width: 368, background: '#fff', borderLeft: '1px solid #e4e8ee', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '13px 16px', borderBottom: '1px solid #e4e8ee' }}>
-        <span style={{ width: 34, height: 34, borderRadius: 9, background: `linear-gradient(135deg,${accent},#d05ce0)`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}><Sparkle size={17} /></span>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 700, fontSize: 14 }}>Plynth Assistant</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: '#7e8a99' }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22b07d' }} /> knows this project · {docName}
-          </div>
-        </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#8a96a6', cursor: 'pointer' }}><Close size={18} /></button>
-      </div>
-      <div className="scroll" style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: '#9aa6b4', letterSpacing: 0.4, marginBottom: 2 }}>TRY ASKING</div>
-        {['Add an element and connect it to an existing one', 'Tidy up the layout', 'Explain what this diagram models', "What's missing from this design?"].map((s) => (
-          <button key={s} style={{ textAlign: 'left', background: '#fff', border: '1px solid #e4e8ee', borderRadius: 10, padding: '11px 12px', fontSize: 13 }}>{s}</button>
-        ))}
-      </div>
-      <div style={{ borderTop: '1px solid #e4e8ee', padding: 12 }}>
-        <div style={{ border: '1px solid #e4e8ee', borderRadius: 12, padding: 10, fontSize: 13.5, color: '#9aa6b4' }}>Ask to edit this diagram…</div>
-        <div style={{ fontSize: 10.5, color: '#9aa6b4', textAlign: 'center', marginTop: 7 }}>Preview assistant · runs in your session</div>
-      </div>
-    </aside>
   );
 }

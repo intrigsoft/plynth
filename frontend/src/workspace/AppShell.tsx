@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/session';
 import { api } from '../lib/api';
 import { Avatar, ChevronDown, Logo, Sparkle } from '../lib/icons';
-import { DioscAssistant } from './components/DioscAssistant';
+import { ASSISTANT_WIDTH, useAssistant } from './components/PersistentAssistant';
 
 export interface Crumb {
   label: string;
@@ -16,21 +16,16 @@ export interface Crumb {
 export function AppShell({
   crumbs,
   docActions,
-  suppressAssistant,
   children,
 }: {
   crumbs: Crumb[];
   docActions?: ReactNode;
-  assistantContext?: string;
-  /** When true the embedded editor owns the right panel; the shell hides its
-   *  own global assistant + toggle. */
-  suppressAssistant?: boolean;
   children: ReactNode;
 }) {
   const { session, signOut } = useAuth();
   const nav = useNavigate();
   const [userMenu, setUserMenu] = useState(false);
-  const [gaOpen, setGaOpen] = useState(true);
+  const { open: gaOpen, toggle: toggleAssistant } = useAssistant();
 
   return (
     <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'var(--ink)' }}>
@@ -97,26 +92,24 @@ export function AppShell({
 
         <div style={{ flex: 1 }} />
 
-        {!suppressAssistant && (
-          <button
-            onClick={() => setGaOpen((v) => !v)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              border: 'none',
-              borderRadius: 8,
-              padding: '6px 11px',
-              fontSize: 13,
-              fontWeight: 600,
-              background: gaOpen ? 'var(--primary)' : '#1f2630',
-              color: gaOpen ? '#fff' : '#cdd5e0',
-            }}
-          >
-            <Sparkle size={15} />
-            Assistant
-          </button>
-        )}
+        <button
+          onClick={toggleAssistant}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            border: 'none',
+            borderRadius: 8,
+            padding: '6px 11px',
+            fontSize: 13,
+            fontWeight: 600,
+            background: gaOpen ? 'var(--primary)' : '#1f2630',
+            color: gaOpen ? '#fff' : '#cdd5e0',
+          }}
+        >
+          <Sparkle size={15} />
+          Assistant
+        </button>
 
         <div style={{ position: 'relative' }}>
           <button
@@ -151,10 +144,10 @@ export function AppShell({
         </div>
       </header>
 
-      {/* body */}
-      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+      {/* body — reserve a gutter for the app-wide assistant panel (rendered once,
+          fixed-position, in AssistantProvider) so content never sits under it. */}
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, paddingRight: gaOpen ? ASSISTANT_WIDTH : 0 }}>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>{children}</div>
-        {!suppressAssistant && gaOpen && <DioscAssistant />}
       </div>
     </div>
   );

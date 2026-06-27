@@ -85,7 +85,6 @@ export function DocumentScreen() {
         { label: doc.name, active: true, badge: { text: meta.label, color: meta.accent } },
       ]}
       docActions={docActions}
-      suppressAssistant
     >
       <EditorHost key={doc.id} projectId={p.id} doc={doc} projectName={p.name} exportApi={exportApi} />
     </AppShell>

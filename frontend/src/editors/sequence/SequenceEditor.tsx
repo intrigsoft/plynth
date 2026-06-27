@@ -783,7 +783,6 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
       onFit={fitView}
       onAutoLayout={tidy}
       cursor={cursor}
-      assistantDocName={docName}
       onCanvasPointerDown={(e) => { commitEdit(); if (!panMode) setSel(null); vp.beginPan(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createLife({ name: 'Participant', x: w.x, select: true }); beginEdit({ kind: 'lifeline', id }); }}
       world={

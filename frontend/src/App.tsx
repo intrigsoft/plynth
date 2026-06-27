@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider, useAuth } from './lib/session';
+import { AssistantProvider } from './workspace/components/PersistentAssistant';
 import { WorkspaceProvider } from './workspace/WorkspaceProvider';
 import { LoginScreen } from './workspace/LoginScreen';
 import { ProjectsScreen } from './workspace/ProjectsScreen';
@@ -16,13 +17,17 @@ function RequireAuth({ children }: { children: ReactNode }) {
 export function App() {
   return (
     <AuthProvider>
-      <Routes>
-        <Route path="/login" element={<LoginScreen />} />
-        <Route path="/" element={<RequireAuth><ProjectsScreen /></RequireAuth>} />
-        <Route path="/p/:projectId" element={<RequireAuth><ProjectScreen /></RequireAuth>} />
-        <Route path="/p/:projectId/d/:docId" element={<RequireAuth><DocumentScreen /></RequireAuth>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      {/* The assistant lives ABOVE the router so it mounts once and survives
+          navigation — only the routed content below swaps per page. */}
+      <AssistantProvider>
+        <Routes>
+          <Route path="/login" element={<LoginScreen />} />
+          <Route path="/" element={<RequireAuth><ProjectsScreen /></RequireAuth>} />
+          <Route path="/p/:projectId" element={<RequireAuth><ProjectScreen /></RequireAuth>} />
+          <Route path="/p/:projectId/d/:docId" element={<RequireAuth><DocumentScreen /></RequireAuth>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AssistantProvider>
     </AuthProvider>
   );
 }

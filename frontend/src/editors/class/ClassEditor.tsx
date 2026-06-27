@@ -429,7 +429,7 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
   return (
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
-      onFit={fitAll} onAutoLayout={() => void autoLayout()} assistantDocName={docName}
+      onFit={fitAll} onAutoLayout={() => void autoLayout()}
       onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); bc.bgDown(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createClass('class', w.x - 78, w.y - 30); bc.setSel({ kind: 'node', id }); beginEdit(Number(id), { t: 'name' }); }}
       world={

@@ -829,7 +829,6 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
       palette={palette}
       onFit={fitAll}
       onAutoLayout={() => void autoLayout()}
-      assistantDocName={docName}
       onCanvasPointerDown={(e) => {
         if (edit) commitEdit();
         if (textEdit) commitTextEdit();
