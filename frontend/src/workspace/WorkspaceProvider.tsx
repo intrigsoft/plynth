@@ -49,6 +49,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
+  // The embedded assistant mutates this same per-device sandbox via MCP tools.
+  // When it finishes a data-changing tool, PersistentAssistant fires a
+  // `plynth:refresh` window event; re-fetch so the UI reflects the change
+  // (mirrors Cadence's `invalidateAll` on `tool:completed`).
+  useEffect(() => {
+    const onRefresh = () => void refresh();
+    window.addEventListener('plynth:refresh', onRefresh);
+    return () => window.removeEventListener('plynth:refresh', onRefresh);
+  }, [refresh]);
+
   const replaceProject = useCallback((p: Project) => {
     setProjects((cur) => cur.map((x) => (x.id === p.id ? p : x)));
   }, []);

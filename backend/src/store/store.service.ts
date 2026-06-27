@@ -187,8 +187,10 @@ export class StoreService {
   searchProjects(deviceId: string, query: string): Array<{ id: string; name: string }> {
     const q = (query ?? '').trim().toLowerCase();
     return this.state(deviceId).projects
-      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.desc.toLowerCase().includes(q))
-      .map(({ id, name }) => ({ id, name }));
+      .map((p) => ({ p, score: matchScore(q, p.name, p.desc) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(({ p }) => ({ id: p.id, name: p.name }));
   }
 
   searchDocuments(
@@ -200,10 +202,36 @@ export class StoreService {
     const projects = projectId
       ? [this.getProject(deviceId, projectId)]
       : this.state(deviceId).projects;
-    return projects.flatMap((p) =>
-      p.docs
-        .filter((d) => !q || d.name.toLowerCase().includes(q) || (d.desc ?? '').toLowerCase().includes(q))
-        .map((d) => ({ id: d.id, name: d.name, type: d.type, projectId: p.id })),
-    );
+    return projects
+      .flatMap((p) =>
+        p.docs.map((d) => ({ d, p, score: matchScore(q, d.name, d.desc ?? '') })),
+      )
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(({ d, p }) => ({ id: d.id, name: d.name, type: d.type, projectId: p.id }));
   }
+}
+
+/**
+ * Relevance score for the assistant + navigation resolver. A strict
+ * `name.includes(query)` breaks the placeholder resolver — an LLM often passes a
+ * verbose term ("Checkout Platform project page") that is NOT a substring of the
+ * entity name. But a purely lenient match over-matches (a query token like
+ * "service" hits another project's description), and the resolver takes
+ * `results[0]`, so RANKING matters as much as matching. Higher = better; the
+ * best match sorts first. Returns 0 for no match.
+ */
+function matchScore(q: string, name: string, desc: string): number {
+  if (!q) return 1;
+  const n = name.toLowerCase();
+  const d = desc.toLowerCase();
+  if (n === q) return 100; // exact name
+  if (n.includes(q)) return 80; // query is a substring of the name
+  if (q.includes(n)) return 70; // name is a substring of a verbose query
+  const tokens = q.split(/\s+/).filter((t) => t.length >= 3);
+  const nameHits = tokens.filter((t) => n.includes(t)).length;
+  const descHits = tokens.filter((t) => d.includes(t)).length;
+  // Name-token hits weigh far more than description-token hits, so an exact-ish
+  // name beats an incidental keyword in an unrelated entity's description.
+  return nameHits * 10 + descHits;
 }

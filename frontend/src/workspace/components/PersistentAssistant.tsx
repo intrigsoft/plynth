@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/session';
 
 /**
@@ -50,6 +51,27 @@ function ensureLoader(): void {
   document.head.appendChild(s);
 }
 
+type DioscFn = (...args: unknown[]) => unknown;
+
+/** Run `cb` once `window.diosc` exists (it appears after the kit bundle loads). */
+function whenDioscReady(isCancelled: () => boolean, cb: (diosc: DioscFn) => void): void {
+  const start = performance.now();
+  const tick = () => {
+    if (isCancelled()) return;
+    const diosc = (window as unknown as { diosc?: DioscFn }).diosc;
+    if (typeof diosc === 'function') { cb(diosc); return; }
+    if (performance.now() - start < 15000) setTimeout(tick, 150);
+  };
+  tick();
+}
+
+/**
+ * Tool names that change workspace data — when one completes we re-fetch so the
+ * UI reflects what the assistant just did. Read-only tools (get_*, search_*,
+ * list_*, navigate) intentionally don't match, so reads don't churn the UI.
+ */
+const MUTATING_TOOL = /(?:^|[_.])(create|update|delete|add|remove)(?:[_.]|$)/i;
+
 /**
  * Provides the assistant open/close state to every screen and renders the one
  * persistent panel as a sibling of the routed content. The panel is only
@@ -58,9 +80,44 @@ function ensureLoader(): void {
  */
 export function AssistantProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(true);
 
   useEffect(() => { ensureLoader(); }, []);
+
+  // Wire the kit's host hooks once the bundle is up (mirrors Cadence's
+  // AssistantPanel). Two things:
+  //  1. Override the `navigate` browser tool so the assistant's hub-validated
+  //     navigations route through React Router (no full reload) instead of the
+  //     kit's default window.location.assign.
+  //  2. On a data-changing tool completing, ask the workspace to re-fetch.
+  useEffect(() => {
+    if (!API_KEY) return;
+    let cancelled = false;
+    const cleanups: Array<() => void> = [];
+
+    whenDioscReady(() => cancelled, (diosc) => {
+      diosc('tool', 'navigate', (data: unknown) => {
+        const d = data as { params?: { path?: string }; path?: string; url?: string };
+        const path = d?.params?.path ?? d?.path ?? d?.url;
+        if (typeof path !== 'string' || !path) return { error: 'No path provided for navigation' };
+        try { navigate(path); return { navigatedTo: path }; }
+        catch (err) { return { error: err instanceof Error ? err.message : 'Navigation failed' }; }
+      });
+      cleanups.push(() => { try { diosc('tool', 'navigate', null); } catch { /* noop */ } });
+
+      const unsub = diosc('on', 'tool:completed', (data: unknown) => {
+        const d = data as { success?: boolean; toolName?: string };
+        if (d?.success === false) return;
+        if (MUTATING_TOOL.test(String(d?.toolName ?? ''))) {
+          window.dispatchEvent(new Event('plynth:refresh'));
+        }
+      });
+      if (typeof unsub === 'function') cleanups.push(unsub as () => void);
+    });
+
+    return () => { cancelled = true; cleanups.forEach((fn) => fn()); };
+  }, [navigate]);
 
   const ctx: AssistantCtx = {
     open,

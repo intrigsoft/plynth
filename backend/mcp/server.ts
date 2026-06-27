@@ -30,7 +30,7 @@ export function createPlynthMcpServer(): McpServer {
 
   server.registerTool(
     'search_projects',
-    { description: 'Find projects by name or description. Returns [{id,name}]. Use to resolve a project id from a name before navigating or acting.', inputSchema: { query: z.string() } },
+    { description: 'Find projects by name or description. Returns { results: [{id,name}] }. Use to resolve a project id from a name before navigating or acting.', inputSchema: { query: z.string() } },
     ({ query }, x) => relay(x as ToolExtra, 'GET', `/projects/search?q=${encodeURIComponent(query)}`),
   );
 
@@ -62,7 +62,7 @@ export function createPlynthMcpServer(): McpServer {
 
   server.registerTool(
     'search_documents',
-    { description: 'Find diagrams by name/description, optionally within one project. Returns [{id,name,type,projectId}]. Use to resolve a document id before navigating.', inputSchema: { query: z.string(), projectId: z.string().optional() } },
+    { description: 'Find diagrams by name/description, optionally within one project. Returns { results: [{id,name,type,projectId}] }. Use to resolve a document id before navigating.', inputSchema: { query: z.string(), projectId: z.string().optional() } },
     ({ query, projectId }, x) => relay(x as ToolExtra, 'GET', `/projects/documents/search?q=${encodeURIComponent(query)}${projectId ? `&projectId=${enc(projectId)}` : ''}`),
   );
 

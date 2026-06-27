@@ -16,14 +16,17 @@ export class ProjectsController {
 
   /* ---- search (declared before ":id" so the literals aren't shadowed) --- */
 
+  // Returns `{ results: [...] }` (a NAMED array, not a bare list) so DioscHub
+  // sitemap placeholder resolvers can extract an id via outputPath
+  // `results[0].id` — the hub's path extractor can't index a leading bare array.
   @Get('search')
   searchProjects(@DeviceId() device: string, @Query('q') q = '') {
-    return this.store.searchProjects(device, q);
+    return { results: this.store.searchProjects(device, q) };
   }
 
   @Get('documents/search')
   searchDocuments(@DeviceId() device: string, @Query('q') q = '', @Query('projectId') projectId?: string) {
-    return this.store.searchDocuments(device, q, projectId);
+    return { results: this.store.searchDocuments(device, q, projectId) };
   }
 
   @Get()
