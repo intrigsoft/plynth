@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import {
   CreateDocumentDto,
   CreateProjectDto,
@@ -13,6 +13,18 @@ import { DeviceId } from '../store/device';
 @Controller('projects')
 export class ProjectsController {
   constructor(private readonly store: StoreService) {}
+
+  /* ---- search (declared before ":id" so the literals aren't shadowed) --- */
+
+  @Get('search')
+  searchProjects(@DeviceId() device: string, @Query('q') q = '') {
+    return this.store.searchProjects(device, q);
+  }
+
+  @Get('documents/search')
+  searchDocuments(@DeviceId() device: string, @Query('q') q = '', @Query('projectId') projectId?: string) {
+    return this.store.searchDocuments(device, q, projectId);
+  }
 
   @Get()
   list(@DeviceId() device: string): Project[] {

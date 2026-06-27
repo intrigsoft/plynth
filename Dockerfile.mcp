@@ -1,0 +1,21 @@
+# Plynth MCP server (the HTTP transport DioscHub connects to).
+# Deploy alongside the main app; point it at the app's REST API via PLYNTH_API_URL
+# and share PLYNTH_ARTIFACT_SECRET with the backend so artifacts verify.
+FROM node:20-slim
+WORKDIR /app
+
+# Workspace manifests (for a cached install of the backend workspace deps).
+COPY package.json package-lock.json* ./
+COPY shared/package.json ./shared/
+COPY backend/package.json ./backend/
+COPY frontend/package.json ./frontend/
+RUN npm ci || npm install
+
+# The MCP server source (runs via tsx — no build step) + the shared types it may touch.
+COPY shared ./shared
+COPY backend ./backend
+
+ENV NODE_ENV=production
+# Railway/Heroku inject PORT; the server falls back to PLYNTH_MCP_PORT then 5174.
+EXPOSE 5174
+CMD ["npm", "run", "mcp:http", "-w", "@plynth/backend"]

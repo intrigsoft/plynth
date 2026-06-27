@@ -13,6 +13,7 @@ import {
   CreateDocumentDto,
   CreateProjectDto,
   DiagramDoc,
+  DiagramType,
   Project,
   UpdateDocumentDto,
   UpdateProjectDto,
@@ -179,5 +180,30 @@ export class StoreService {
     if (i < 0) throw new NotFoundException(`document '${docId}' not found`);
     p.docs.splice(i, 1);
     p.updatedAt = this.now();
+  }
+
+  /* ---- search (name → id, for the assistant + navigation resolver) ------ */
+
+  searchProjects(deviceId: string, query: string): Array<{ id: string; name: string }> {
+    const q = (query ?? '').trim().toLowerCase();
+    return this.state(deviceId).projects
+      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.desc.toLowerCase().includes(q))
+      .map(({ id, name }) => ({ id, name }));
+  }
+
+  searchDocuments(
+    deviceId: string,
+    query: string,
+    projectId?: string,
+  ): Array<{ id: string; name: string; type: DiagramType; projectId: string }> {
+    const q = (query ?? '').trim().toLowerCase();
+    const projects = projectId
+      ? [this.getProject(deviceId, projectId)]
+      : this.state(deviceId).projects;
+    return projects.flatMap((p) =>
+      p.docs
+        .filter((d) => !q || d.name.toLowerCase().includes(q) || (d.desc ?? '').toLowerCase().includes(q))
+        .map((d) => ({ id: d.id, name: d.name, type: d.type, projectId: p.id })),
+    );
   }
 }

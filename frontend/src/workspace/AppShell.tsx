@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/session';
 import { api } from '../lib/api';
 import { Avatar, ChevronDown, Logo, Sparkle } from '../lib/icons';
-import { GlobalAssistant } from './components/GlobalAssistant';
+import { DioscAssistant } from './components/DioscAssistant';
 
 export interface Crumb {
   label: string;
@@ -16,7 +16,6 @@ export interface Crumb {
 export function AppShell({
   crumbs,
   docActions,
-  assistantContext,
   suppressAssistant,
   children,
 }: {
@@ -155,7 +154,7 @@ export function AppShell({
       {/* body */}
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>{children}</div>
-        {!suppressAssistant && gaOpen && <GlobalAssistant context={assistantContext} onClose={() => setGaOpen(false)} />}
+        {!suppressAssistant && gaOpen && <DioscAssistant />}
       </div>
     </div>
   );

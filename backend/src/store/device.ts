@@ -9,6 +9,7 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import type { StoreService } from './store.service';
+import { verifyArtifact } from './artifact';
 
 export const DEVICE_COOKIE = 'plynth_device';
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -29,6 +30,19 @@ function isLocal(host: string | undefined): boolean {
 
 export function deviceCookie(store: StoreService) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Machine branch: DioscHub forwards the bound BYOA artifact (no cookie) as a
+    // Bearer. Verify it → deviceId, so the assistant acts on the human's sandbox.
+    // `store.state` lazily re-seeds an evicted device, same as the cookie path.
+    const auth = req.headers.authorization;
+    if (auth?.startsWith('Bearer ')) {
+      const claims = verifyArtifact(auth.slice(7).trim());
+      if (claims) {
+        (req as Request & { deviceId?: string }).deviceId = claims.deviceId;
+        return next();
+      }
+    }
+
+    // Human branch: resolve (and on first visit mint+set) the device cookie.
     const { deviceId, isNew } = store.getOrCreateDevice(readCookie(req.headers.cookie, DEVICE_COOKIE));
     if (isNew) {
       res.cookie(DEVICE_COOKIE, deviceId, {
