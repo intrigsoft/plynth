@@ -10,7 +10,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { relay, enc, type ToolExtra } from './api.js';
+import { relay, relayDelete, enc, type ToolExtra } from './api.js';
 
 const DIAGRAM_TYPES = ['erd', 'class', 'sequence', 'deployment', 'component', 'flowchart', 'usecase'] as const;
 
@@ -55,7 +55,7 @@ export function createPlynthMcpServer(): McpServer {
   server.registerTool(
     'delete_project',
     { description: 'Delete a project and all its documents. Destructive — may require approval.', inputSchema: { projectId: z.string() } },
-    ({ projectId }, x) => relay(x as ToolExtra, 'DELETE', `/projects/${enc(projectId)}`),
+    ({ projectId }, x) => relayDelete(x as ToolExtra, `/projects/${enc(projectId)}`, { projectId }),
   );
 
   /* ---- documents ------------------------------------------------------- */
@@ -87,7 +87,7 @@ export function createPlynthMcpServer(): McpServer {
   server.registerTool(
     'delete_document',
     { description: 'Delete a document. Destructive — may require approval.', inputSchema: { projectId: z.string(), documentId: z.string() } },
-    ({ projectId, documentId }, x) => relay(x as ToolExtra, 'DELETE', `/projects/${enc(projectId)}/documents/${enc(documentId)}`),
+    ({ projectId, documentId }, x) => relayDelete(x as ToolExtra, `/projects/${enc(projectId)}/documents/${enc(documentId)}`, { projectId, documentId }),
   );
 
   return server;

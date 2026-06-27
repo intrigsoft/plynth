@@ -86,6 +86,20 @@ export async function relay(extra: ToolExtra | undefined, method: Method, path: 
   return toToolResult(await call(method, path, payload, artifactFor(extra)));
 }
 
+/**
+ * DELETE relay that returns an EXPLICIT success payload instead of the bare
+ * `null` a 204 produces. A destructive tool whose result is just `null` gives
+ * the model nothing to confirm against, so it tends to confabulate a failure
+ * ("permission denied") even though the delete succeeded. Handing back
+ * `{ deleted: true, ...confirm }` removes that ambiguity. Failures still surface
+ * the real REST error via `toToolResult`.
+ */
+export async function relayDelete(extra: ToolExtra | undefined, path: string, confirm: Record<string, unknown>): Promise<CallToolResult> {
+  const api = await call('DELETE', path, undefined, artifactFor(extra));
+  if (api.ok) return { content: [{ type: 'text', text: JSON.stringify({ deleted: true, ...confirm }) }] };
+  return toToolResult(api);
+}
+
 export function enc(segment: string): string {
   return encodeURIComponent(segment);
 }
