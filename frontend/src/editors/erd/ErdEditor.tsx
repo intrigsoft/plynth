@@ -6,8 +6,10 @@ import {
   EditorShell,
   PaletteTile,
   PillBtn,
+  PillDelete,
   PillDivider,
-  PillLabel,
+  PillSelect,
+  PillToggle,
   RailLabel,
   SelectionPill,
   StylePicker,
@@ -44,10 +46,11 @@ import {
   type ErdRel,
   type TextNode as ErdText,
 } from './model';
-import { CardGlyph, CrowDefs, cardMarker } from './markers';
+import { CrowDefs, cardMarker } from './markers';
 import { runErdExport } from './export';
 
 const ACCENT = '#a21caf';
+const cardOptions = CARDS.map((c) => ({ value: c, label: CARD_LABEL[c] }));
 
 export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
   const erd = useMemo(() => asErd(model), [model]);
@@ -258,6 +261,8 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
   const selRel = sel?.kind === 'edge' ? erd.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? erd.frames.find((f) => f.id === sel.id) : undefined;
   const selText = sel?.kind === 'text' ? erd.texts.find((t) => String(t.id) === sel.id) : undefined;
+  const selNode = sel?.kind === 'node' ? erd.entities.find((e) => String(e.id) === sel.id) : undefined;
+  const deleteNode = (id: number) => { setEntities((es) => es.filter((x) => x.id !== id)); setRels((rs) => rs.filter((r) => r.from !== id && r.to !== id)); bc.setSel(null); };
   const setCard = (end: 'from' | 'to', c: Card) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, [end === 'from' ? 'fromCard' : 'toCard']: c } : r)));
   const toggleIdent = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, identifying: !r.identifying } : r)));
   const reverseRel = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, from: r.to, to: r.from, fromCard: r.toCard, toCard: r.fromCard } : r)));
@@ -356,10 +361,6 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
             </div>
           )}
         </div>
-        {selected && (
-          <button onPointerDown={(ev) => ev.stopPropagation()} onClick={() => { setEntities((es) => es.filter((x) => x.id !== e.id)); setRels((rs) => rs.filter((r) => r.from !== e.id && r.to !== e.id)); bc.setSel(null); }}
-            style={{ position: 'absolute', top: -11, right: -11, width: 23, height: 23, borderRadius: '50%', background: '#10141b', border: '2px solid #fff', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }}>×</button>
-        )}
         {showPorts && ['top', 'right', 'bottom', 'left'].map((side) => {
           const pos: Record<string, React.CSSProperties> = {
             top: { top: -6, left: '50%', marginLeft: -5.5 }, bottom: { bottom: -6, left: '50%', marginLeft: -5.5 },
@@ -404,21 +405,14 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
       const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
       relPill = (
         <SelectionPill x={mid.x * vp.scale + vp.tx} y={mid.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-          <PillLabel>FROM</PillLabel>
-          {CARDS.map((c) => <PillBtn key={c} accent={ACCENT} active={selRel.fromCard === c} onClick={() => setCard('from', c)} title={CARD_LABEL[c]}><CardGlyph card={c} color={selRel.fromCard === c ? '#fff' : '#cdd5e0'} /></PillBtn>)}
+          <PillSelect label="FROM" accent={ACCENT} width={84} value={selRel.fromCard} options={cardOptions} onChange={(v) => setCard('from', v as Card)} testId="erd-rel-from-card" />
+          <PillSelect label="TO" accent={ACCENT} width={84} value={selRel.toCard} options={cardOptions} onChange={(v) => setCard('to', v as Card)} testId="erd-rel-to-card" />
           <PillDivider />
-          <PillLabel>TO</PillLabel>
-          {CARDS.map((c) => <PillBtn key={c} accent={ACCENT} active={selRel.toCard === c} onClick={() => setCard('to', c)} title={CARD_LABEL[c]}><CardGlyph card={c} color={selRel.toCard === c ? '#fff' : '#cdd5e0'} /></PillBtn>)}
-          <PillDivider />
-          <PillBtn accent={ACCENT} color={selRel.identifying ? '#cdd5e0' : '#d05ce0'} onClick={toggleIdent} title="Identifying (solid) / non-identifying (dashed)">
-            <svg width={22} height={12} viewBox="0 0 22 12" fill="none" stroke="currentColor" strokeWidth={1.6}><path d="M2 6h18" strokeDasharray={selRel.identifying ? undefined : '4 3'} /></svg>
-          </PillBtn>
+          <PillToggle label="Identifying" accent={ACCENT} on={selRel.identifying !== false} onToggle={toggleIdent} testId="erd-rel-identifying" />
           <PillBtn accent={ACCENT} onClick={reverseRel} title="Reverse direction">
             <svg width={16} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round"><path d="M4 8h13l-3-3M20 16H7l3 3" /></svg>
           </PillBtn>
-          <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete">
-            <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
-          </PillBtn>
+          <PillDelete label="" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete relationship" testId="erd-rel-delete" />
         </SelectionPill>
       );
     }
@@ -493,6 +487,14 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
       hud={
         <>
           {relPill}
+          {selNode && (() => {
+            const g = geom.get(String(selNode.id))!;
+            return (
+              <SelectionPill x={(selNode.x + g.w / 2) * vp.scale + vp.tx} y={selNode.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
+                <PillDelete onClick={() => deleteNode(selNode.id)} title="Delete table (Del)" testId="erd-node-delete" />
+              </SelectionPill>
+            );
+          })()}
           {selText && (() => {
             const g = textGeom.get(String(selText.id))!;
             return (
@@ -500,17 +502,13 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
                 <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
                   onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
                 <PillDivider />
-                <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)">
-                  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
-                </PillBtn>
+                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="erd-text-delete" />
               </SelectionPill>
             );
           })()}
           {selFrame && (
             <SelectionPill x={selFrame.x * vp.scale + vp.tx} y={selFrame.y * vp.scale + vp.ty - 16} transform="translate(0,-100%)">
-              <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setFrames((fs) => fs.filter((f) => f.id !== selFrame.id)); bc.setSel(null); }} title="Delete frame">
-                <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
-              </PillBtn>
+              <PillDelete onClick={() => { setFrames((fs) => fs.filter((f) => f.id !== selFrame.id)); bc.setSel(null); }} title="Delete frame" testId="erd-frame-delete" />
             </SelectionPill>
           )}
           {bc.link && <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', background: '#10141b', color: '#e6eaf0', borderRadius: 20, padding: '6px 14px', fontSize: 12.5, zIndex: 26 }}>{bc.link.target ? 'Release to relate' : 'Release on a table to relate — or on empty canvas to create one'}</div>}

@@ -150,6 +150,150 @@ export function PillDivider() {
   return <span style={{ width: 1, height: 20, background: '#2a3240', margin: '0 2px' }} />;
 }
 
+/* ---- Standardized pill controls (shared toolbar kit) --------------------- *
+ * Mirrors design/plynth/toolbars.js (window.PlynthTB):
+ *   - PillSelect  → chevron <select> dropdown (replaces icon-button rows)
+ *   - PillToggle  → labeled on/off toggle (highlights with accent when on)
+ *   - PillDelete  → red trash + "Delete" label (icon-only when label="")
+ * All three are sized for the dark <SelectionPill> container.            */
+
+/** Chevron baked into the select background (matches design select() glyph). */
+const PILL_SELECT_CHEVRON =
+  "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%239aa6b4' stroke-width='3'><path d='M6 9l6 6 6-6'/></svg>\")";
+
+/** Dropdown control styled for the dark pill. Replaces multi-option icon rows. */
+export function PillSelect({
+  value,
+  options,
+  onChange,
+  accent,
+  label,
+  width = 150,
+  testId,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+  accent: string;
+  /** Optional inline caption (e.g. "FROM") rendered before the select. */
+  label?: string;
+  /** Select width in px (default 150). */
+  width?: number;
+  testId?: string;
+}) {
+  const selStyle: CSSProperties = {
+    appearance: 'none',
+    WebkitAppearance: 'none',
+    background: `#1f2733 ${PILL_SELECT_CHEVRON} no-repeat right 8px center`,
+    accentColor: accent,
+    color: '#e6eaf0',
+    border: '1px solid #2a3240',
+    borderRadius: 6,
+    height: 28,
+    cursor: 'pointer',
+    fontFamily: "'Hanken Grotesk',system-ui,sans-serif",
+    fontWeight: 600,
+    fontSize: 12.5,
+    width,
+    padding: '0 24px 0 10px',
+  };
+  const select = (
+    <select value={value} onChange={(e) => onChange(e.target.value)} style={selStyle} title={label} data-testid={label ? undefined : testId}>
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  );
+  if (!label) return select;
+  return (
+    <span data-testid={testId} style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+      <PillLabel>{label}</PillLabel>
+      {select}
+    </span>
+  );
+}
+
+/** Labeled on/off toggle. Highlights with the editor accent when on. */
+export function PillToggle({
+  label,
+  on,
+  onToggle,
+  accent,
+  testId,
+}: {
+  label: string;
+  on: boolean;
+  onToggle: () => void;
+  accent: string;
+  testId?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={label}
+      data-testid={testId}
+      style={{
+        background: on ? accent : 'transparent',
+        color: on ? '#fff' : '#cdd5e0',
+        border: `1px solid ${on ? accent : '#2a3240'}`,
+        borderRadius: 6,
+        height: 28,
+        padding: '0 11px',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        fontFamily: "'Hanken Grotesk',system-ui,sans-serif",
+        fontWeight: 600,
+        fontSize: 12,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+/** Red trash delete control. Default label "Delete"; pass label="" for icon-only. */
+export function PillDelete({
+  onClick,
+  label = 'Delete',
+  title,
+  testId,
+}: {
+  onClick: () => void;
+  /** Visible label (default "Delete"). Empty string renders the trash icon only. */
+  label?: string;
+  title?: string;
+  testId?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title ?? (label || 'Delete')}
+      data-testid={testId}
+      style={{
+        background: 'none',
+        border: 'none',
+        color: '#ff8a8a',
+        cursor: 'pointer',
+        padding: label ? '5px 10px' : '5px 6px',
+        borderRadius: 6,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        fontFamily: "'Hanken Grotesk',system-ui,sans-serif",
+        fontWeight: 600,
+        fontSize: 12,
+      }}
+    >
+      <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
+      {label && <span>{label}</span>}
+    </button>
+  );
+}
+
 /* ---- Editor-embedded assistant (static chrome, Phase 1) ------------------ */
 export function EditorAssistant({ docName, accent, onClose }: { docName: string; accent: string; onClose: () => void }) {
   return (

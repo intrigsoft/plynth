@@ -7,7 +7,9 @@ import {
   EditorShell,
   PaletteTile,
   PillBtn,
+  PillDelete,
   PillDivider,
+  PillSelect,
   RailLabel,
   SelectionPill,
   StylePicker,
@@ -30,7 +32,7 @@ import {
   type Rect,
   type Tool,
 } from '../engine';
-import { FRAME_ORDER } from '../engine';
+import { FRAME_ORDER, FRAME_TYPES } from '../engine';
 import type { EditorProps } from '../types';
 import {
   asComponent,
@@ -48,12 +50,15 @@ import {
   type RelType,
   type TextNode as CompText,
 } from './model';
-import { CompDefs, ComponentGlyph, FrameGlyph, KindIcon, RelTypeGlyph } from './markers';
+import { CompDefs, ComponentGlyph, FrameGlyph, KindIcon } from './markers';
 import { runComponentExport } from './export';
 
 const ACCENT = '#4f46e5';
 const REL_TYPES: RelType[] = ['assembly', 'dependency', 'delegation', 'composition'];
-const REL_TITLE: Record<RelType, string> = { assembly: 'Assembly connector', dependency: 'Dependency «use»', delegation: 'Delegation', composition: 'Composition (contains)' };
+const REL_TITLE: Record<RelType, string> = { assembly: 'Assembly', dependency: 'Dependency', delegation: 'Delegation', composition: 'Composition' };
+const relTypeOptions = REL_TYPES.map((t) => ({ value: t, label: REL_TITLE[t] }));
+const kindOptions = KORDER.map((k) => ({ value: k, label: KINDS[k].label }));
+const frameTypeOptions = FRAME_ORDER.map((t) => ({ value: t, label: FRAME_TYPES[t].label }));
 
 export function ComponentEditor({ model, onModel, docName, exportApi }: EditorProps) {
   const cm = useMemo(() => asComponent(model), [model]);
@@ -399,10 +404,6 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
           </div>
         )}
 
-        {selected && (
-          <button onPointerDown={(ev) => ev.stopPropagation()} onClick={() => { setComps((cs) => cs.filter((x) => x.id !== c.id)); setRels((rs) => rs.filter((r) => r.from !== c.id && r.to !== c.id)); bc.setSel(null); }}
-            style={{ position: 'absolute', top: -11, right: -11, width: 23, height: 23, borderRadius: '50%', background: '#10141b', border: '2px solid #fff', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, zIndex: 9 }}>×</button>
-        )}
         {showPorts && ['top', 'right', 'bottom', 'left'].map((side) => {
           const pos: Record<string, CSSProperties> = {
             top: { top: -6, left: '50%', marginLeft: -5.5 }, bottom: { bottom: -6, left: '50%', marginLeft: -5.5 },
@@ -444,11 +445,9 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
     const g = geom.get(String(selComp.id))!;
     kindPill = (
       <SelectionPill x={(selComp.x + g.w / 2) * vp.scale + vp.tx} y={selComp.y * vp.scale + vp.ty - 14} transform="translate(-50%,-100%)">
-        {KORDER.map((k) => (
-          <PillBtn key={k} accent={ACCENT} active={selComp.kind === k} onClick={() => setKind(selComp.id, k)} title={KINDS[k].label}>
-            <KindIcon kind={k} color={selComp.kind === k ? '#fff' : '#cdd5e0'} size={16} />
-          </PillBtn>
-        ))}
+        <PillSelect label="Type" accent={ACCENT} value={selComp.kind} options={kindOptions} onChange={(v) => setKind(selComp.id, v as CompKind)} testId="component-node-kind" />
+        <PillDivider />
+        <PillDelete label="" onClick={() => { setComps((cs) => cs.filter((x) => x.id !== selComp.id)); setRels((rs) => rs.filter((r) => r.from !== selComp.id && r.to !== selComp.id)); bc.setSel(null); }} title="Delete (Del)" testId="component-node-delete" />
       </SelectionPill>
     );
   }
@@ -462,16 +461,12 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
       const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
       relPill = (
         <SelectionPill x={mid.x * vp.scale + vp.tx} y={mid.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-          {REL_TYPES.map((t) => (
-            <PillBtn key={t} accent={ACCENT} active={selRel.type === t} onClick={() => setRelType(t)} title={REL_TITLE[t]}><RelTypeGlyph type={t} /></PillBtn>
-          ))}
+          <PillSelect accent={ACCENT} value={selRel.type} options={relTypeOptions} onChange={(v) => setRelType(v as RelType)} testId="component-rel-type" />
           <PillDivider />
           <PillBtn accent={ACCENT} onClick={reverseRel} title="Reverse direction">
             <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M7 7h11l-3-3M17 17H6l3 3" /></svg>
           </PillBtn>
-          <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete relationship">
-            <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-          </PillBtn>
+          <PillDelete label="" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete relationship" testId="component-rel-delete" />
         </SelectionPill>
       );
     }
@@ -562,21 +557,15 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
                 <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
                   onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
                 <PillDivider />
-                <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)">
-                  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-                </PillBtn>
+                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="component-text-delete" />
               </SelectionPill>
             );
           })()}
           {selFrame && (
             <SelectionPill x={selFrame.x * vp.scale + vp.tx} y={selFrame.y * vp.scale + vp.ty - 16} transform="translate(0,-100%)">
-              {FRAME_ORDER.map((t) => (
-                <PillBtn key={t} accent={ACCENT} active={selFrame.type === t} onClick={() => setFrameType(t)} title={t}><FrameGlyph type={t} color={selFrame.type === t ? '#fff' : '#cdd5e0'} /></PillBtn>
-              ))}
+              <PillSelect accent={ACCENT} value={selFrame.type} options={frameTypeOptions} onChange={(v) => setFrameType(v as FrameType)} testId="component-frame-type" />
               <PillDivider />
-              <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setFrames((fs) => fs.filter((f) => f.id !== selFrame.id)); bc.setSel(null); }} title="Delete frame">
-                <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-              </PillBtn>
+              <PillDelete label="" onClick={() => { setFrames((fs) => fs.filter((f) => f.id !== selFrame.id)); bc.setSel(null); }} title="Delete frame" testId="component-frame-delete" />
             </SelectionPill>
           )}
           {bc.link && <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', background: '#10141b', color: '#e6eaf0', borderRadius: 9, padding: '8px 14px', fontSize: 12.5, zIndex: 26 }}>{bc.link.target ? 'Release to connect' : 'Release on a component to connect — or on empty canvas to create one'}</div>}

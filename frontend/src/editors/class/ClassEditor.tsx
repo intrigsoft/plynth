@@ -6,7 +6,9 @@ import {
   EditorShell,
   PaletteTile,
   PillBtn,
+  PillDelete,
   PillDivider,
+  PillSelect,
   RailDivider,
   RailLabel,
   SelectionPill,
@@ -38,10 +40,13 @@ import {
   type ClassRel,
   type RelType,
 } from './model';
-import { ClassMarkers, RelGlyph } from './markers';
+import { ClassMarkers } from './markers';
 import { runClassExport } from './export';
 
 const ACCENT = '#3a5bff';
+
+const relOptions = RELS.map((r) => ({ value: r.type, label: r.label }));
+const frameOptions = FRAME_ORDER.map((t) => ({ value: t, label: FRAME_TYPES[t].label }));
 
 /** Frame-type toolbar glyph paths (mirror of the prototype ICON map). */
 const FRAME_ICON: Record<FrameType, string> = {
@@ -231,6 +236,8 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
   /* ---- relationship + frame selection helpers ---- */
   const selRel = sel?.kind === 'edge' ? cls.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? cls.frames.find((f) => f.id === sel.id) : undefined;
+  const selNode = sel?.kind === 'node' ? cls.classes.find((c) => String(c.id) === sel.id) : undefined;
+  const deleteNode = (id: number) => { setClasses((cs) => cs.filter((x) => x.id !== id)); setRels((rs) => rs.filter((r) => r.from !== id && r.to !== id)); bc.setSel(null); };
   const setRelType = (type: RelType) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, type } : r)));
   const reverseRel = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, from: r.to, to: r.from, fromMult: r.toMult, toMult: r.fromMult } : r)));
   const setFrameType = (type: FrameType) => setFrames((fs) => fs.map((f) => (f.id === selFrame!.id ? { ...f, type } : f)));
@@ -350,10 +357,6 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
           {showAttr && renderComp(c, 'attr')}
           {showMethod && renderComp(c, 'method')}
         </div>
-        {selected && (
-          <button onPointerDown={(ev) => ev.stopPropagation()} onClick={() => { setClasses((cs) => cs.filter((x) => x.id !== c.id)); setRels((rs) => rs.filter((r) => r.from !== c.id && r.to !== c.id)); bc.setSel(null); }}
-            style={{ position: 'absolute', top: -11, right: -11, width: 23, height: 23, borderRadius: '50%', background: '#10141b', border: '2px solid #fff', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }}>×</button>
-        )}
         {showPorts && ['top', 'right', 'bottom', 'left'].map((side) => {
           const pos: Record<string, CSSProperties> = {
             top: { top: -6, left: '50%', marginLeft: -5.5 }, bottom: { bottom: -6, left: '50%', marginLeft: -5.5 },
@@ -377,14 +380,12 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
       const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
       relPill = (
         <SelectionPill x={mid.x * vp.scale + vp.tx} y={mid.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-          {RELS.map((m) => <PillBtn key={m.type} accent={ACCENT} active={selRel.type === m.type} onClick={() => setRelType(m.type)} title={m.label}><RelGlyph type={m.type} /></PillBtn>)}
+          <PillSelect label="Type" accent={ACCENT} value={selRel.type} options={relOptions} onChange={(v) => setRelType(v as RelType)} testId="class-rel-type" />
           <PillDivider />
           <PillBtn accent={ACCENT} onClick={reverseRel} title="Reverse direction">
             <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M7 7h11l-3-3M17 17H6l3 3" /></svg>
           </PillBtn>
-          <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete relationship">
-            <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-          </PillBtn>
+          <PillDelete label="" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete relationship" testId="class-rel-delete" />
         </SelectionPill>
       );
     }
@@ -461,13 +462,19 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
       hud={
         <>
           {relPill}
+          {selNode && (() => {
+            const g = geom.get(String(selNode.id))!;
+            return (
+              <SelectionPill x={(selNode.x + g.w / 2) * vp.scale + vp.tx} y={selNode.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
+                <PillDelete onClick={() => deleteNode(selNode.id)} title="Delete class (Del)" testId="class-node-delete" />
+              </SelectionPill>
+            );
+          })()}
           {selFrame && (
             <SelectionPill x={selFrame.x * vp.scale + vp.tx} y={selFrame.y * vp.scale + vp.ty - 16} transform="translate(0,-100%)">
-              {FRAME_ORDER.map((t) => <PillBtn key={t} accent={ACCENT} active={selFrame.type === t} onClick={() => setFrameType(t)} title={FRAME_TYPES[t].label}><svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinejoin="round"><path d={FRAME_ICON[t]} /></svg></PillBtn>)}
+              <PillSelect label="Type" accent={ACCENT} value={selFrame.type} options={frameOptions} onChange={(v) => setFrameType(v as FrameType)} testId="class-frame-type" />
               <PillDivider />
-              <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setFrames((fs) => fs.filter((f) => f.id !== selFrame.id)); bc.setSel(null); }} title="Delete frame">
-                <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-              </PillBtn>
+              <PillDelete label="" onClick={() => { setFrames((fs) => fs.filter((f) => f.id !== selFrame.id)); bc.setSel(null); }} title="Delete frame" testId="class-frame-delete" />
             </SelectionPill>
           )}
           {bc.link && <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', background: '#10141b', color: '#e6eaf0', borderRadius: 20, padding: '6px 14px', fontSize: 12.5, zIndex: 26 }}>{bc.link.target ? 'Release to connect' : 'Release on a class to connect — or on empty canvas to create one'}</div>}

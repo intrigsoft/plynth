@@ -7,7 +7,9 @@ import {
   EditorShell,
   PaletteTile,
   PillBtn,
+  PillDelete,
   PillDivider,
+  PillSelect,
   RailDivider,
   RailLabel,
   SelectionPill,
@@ -52,6 +54,8 @@ import { runUseCaseExport } from './export';
 const ACCENT = '#0891b2';
 const SYS_MIN_W = 180;
 const SYS_MIN_H = 140;
+const kindOptions = KORDER.map((k) => ({ value: k, label: KIND_LABEL[k] }));
+const relOptions = RORDER.map((t) => ({ value: t, label: rtypeOf(t).title }));
 
 export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProps) {
   const uc = useMemo(() => asUseCase(model), [model]);
@@ -460,15 +464,9 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
     const g = geom.get(String(selNode.id))!;
     kindPill = (
       <SelectionPill x={(g.x + g.w / 2) * vp.scale + vp.tx} y={g.y * vp.scale + vp.ty - 14} transform="translate(-50%,-100%)">
-        {KORDER.map((k) => (
-          <PillBtn key={k} accent={ACCENT} active={selNode.kind === k} onClick={() => setKind(selNode.id, k)} title={KIND_LABEL[k]}>
-            <KindGlyph kind={k} color={selNode.kind === k ? '#fff' : '#cdd5e0'} size={17} />
-          </PillBtn>
-        ))}
+        <PillSelect accent={ACCENT} value={selNode.kind} options={kindOptions} onChange={(v) => setKind(selNode.id, v as UseCaseKind)} testId="usecase-element-type" />
         <PillDivider />
-        <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { const nid = selNode.id; setNodes((ns) => ns.filter((x) => x.id !== nid)); setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid)); bc.setSel(null); }} title="Delete (Del)">
-          <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-        </PillBtn>
+        <PillDelete label="" onClick={() => { const nid = selNode.id; setNodes((ns) => ns.filter((x) => x.id !== nid)); setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid)); bc.setSel(null); }} title="Delete (Del)" testId="usecase-node-delete" />
       </SelectionPill>
     );
   }
@@ -481,18 +479,12 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
       const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
       relPill = (
         <SelectionPill x={mid.x * vp.scale + vp.tx} y={mid.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-          {RORDER.map((t) => (
-            <PillBtn key={t} accent={ACCENT} active={selRel.type === t} onClick={() => setRelType(selRel.id, t)} title={rtypeOf(t).title}>
-              <span style={{ fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 700, letterSpacing: 0.2 }}>{rtypeOf(t).short}</span>
-            </PillBtn>
-          ))}
-          <span style={{ width: 1, height: 20, background: '#2a3240', margin: '0 2px' }} />
+          <PillSelect accent={ACCENT} value={selRel.type} options={relOptions} onChange={(v) => setRelType(selRel.id, v as RelType)} testId="usecase-rel-type" />
+          <PillDivider />
           <PillBtn accent={ACCENT} onClick={() => reverseRel(selRel.id)} title="Reverse direction">
             <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M7 7h11l-3-3M17 17H6l3 3" /></svg>
           </PillBtn>
-          <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete connector">
-            <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-          </PillBtn>
+          <PillDelete label="" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete connector" testId="usecase-rel-delete" />
         </SelectionPill>
       );
     }
@@ -503,15 +495,7 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
   if (sys?.on && selSys) {
     sysPill = (
       <SelectionPill x={sys.x * vp.scale + vp.tx} y={(sys.y - 1) * vp.scale + vp.ty - 12} transform="translate(0,-100%)">
-        <PillBtn accent={ACCENT} onClick={beginSysRename} title="Rename boundary">
-          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinejoin="round" strokeLinecap="round"><path d="M4 20h4l10-10-4-4L4 16v4z" /><path d="M14 6l4 4" /></svg>
-        </PillBtn>
-        <PillBtn accent={ACCENT} color="#cdd5e0" onClick={toggleSystem} title="Toggle boundary off">
-          <SystemGlyph color="currentColor" size={15} />
-        </PillBtn>
-        <PillBtn accent={ACCENT} color="#ff8a8a" onClick={removeSystem} title="Remove boundary">
-          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-        </PillBtn>
+        <PillDelete onClick={removeSystem} title="Delete boundary" testId="usecase-system-delete" />
       </SelectionPill>
     );
   }
@@ -608,9 +592,7 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
                 <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
                   onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
                 <PillDivider />
-                <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)">
-                  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
-                </PillBtn>
+                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="usecase-text-delete" />
               </SelectionPill>
             );
           })()}

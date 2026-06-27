@@ -58,6 +58,8 @@ export interface FlowRel {
   from: number;
   to: number;
   label?: string;
+  /** Render the connector as a dashed line (toggled from the connector toolbar). */
+  dashed?: boolean;
 }
 
 /** A free-floating styled text annotation. `styleId` references one of the

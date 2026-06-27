@@ -10,7 +10,9 @@ import {
   FRAME_TYPES,
   PaletteTile,
   PillBtn,
+  PillDelete,
   PillDivider,
+  PillSelect,
   RailLabel,
   SelectionPill,
   StylePicker,
@@ -48,11 +50,17 @@ import {
   type RelType,
   type TextNode as DeploymentText,
 } from './model';
-import { cylinderPath, DpArrowDefs, FRAME_ICON, RelGlyph, relDash, relMarkerEnd } from './markers';
+import { cylinderPath, DpArrowDefs, FRAME_ICON, relDash, relMarkerEnd } from './markers';
 import { runDeploymentExport } from './export';
 
 const ACCENT = '#c2410c';
 const FRAME_BLUE = '#3a5bff';
+
+/** Connector-type dropdown options (label per relationship kind). */
+const REL_TYPE_LABEL: Record<RelType, string> = { comm: 'Communication', dependency: 'Dependency', deploy: '«deploy»' };
+const relTypeOptions = REL_TYPES.map((t) => ({ value: t, label: REL_TYPE_LABEL[t] }));
+/** Container-type dropdown options (mirrors the frame palette order/labels). */
+const frameTypeOptions = FRAME_ORDER.map((t) => ({ value: t, label: FRAME_TYPES[t].label }));
 
 /** New-node spec for each palette kind (and the link-to-empty fallback). */
 function specForKind(kind: string): Pick<DeploymentNode, 'kind' | 'stereotype' | 'name'> {
@@ -286,6 +294,8 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
   const selRel = sel?.kind === 'edge' ? dep.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? dep.frames.find((f) => f.id === sel.id) : undefined;
   const selText = sel?.kind === 'text' ? dep.texts.find((t) => String(t.id) === sel.id) : undefined;
+  const selNode = sel?.kind === 'node' ? dep.nodes.find((n) => String(n.id) === sel.id) : undefined;
+  const deleteNode = (id: number) => { setNodes((ns) => ns.filter((n) => n.id !== id)); setRels((rs) => rs.filter((r) => r.from !== id && r.to !== id)); bc.setSel(null); };
   const setRelType = (t: RelType) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, type: t } : r)));
   const reverseRel = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, from: r.to, to: r.from } : r)));
   const setFrameType = (t: FrameType) => setFrames((fs) => fs.map((f) => (f.id === selFrame!.id ? { ...f, type: t } : f)));
@@ -414,11 +424,6 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
           <div key={side} onPointerDown={(ev) => bc.portDown(String(n.id), ev)}
             style={{ position: 'absolute', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'crosshair', zIndex: 8, ...ports[side] }} />
         ))}
-        {selected && (
-          <button onPointerDown={(ev) => ev.stopPropagation()}
-            onClick={() => { setNodes((ns) => ns.filter((x) => x.id !== n.id)); setRels((rs) => rs.filter((r) => r.from !== n.id && r.to !== n.id)); bc.setSel(null); }}
-            style={{ position: 'absolute', top: -11, right: -11, width: 23, height: 23, borderRadius: '50%', background: '#10141b', border: '2px solid #fff', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, zIndex: 9 }}>×</button>
-        )}
 
         <div style={headStyle}>
           {n.stereotype && <div style={{ fontSize: 10.5, fontWeight: 500, color: '#9a5b3f', textAlign: 'center', marginBottom: 1 }}>«{n.stereotype}»</div>}
@@ -509,11 +514,7 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
           <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.label}</span>
         </div>
         {selected && (
-          <>
-            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => { setFrames((fs) => fs.filter((x) => x.id !== f.id)); bc.setSel(null); }} title="Delete frame"
-              style={{ position: 'absolute', top: -11, right: -11, width: 22, height: 22, borderRadius: '50%', background: '#10141b', border: '2px solid #fff', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, zIndex: 9 }}>×</button>
-            <div onPointerDown={(e) => bc.frameResizeDown(f.id, e)} style={{ position: 'absolute', right: -6, bottom: -6, width: 14, height: 14, borderRadius: 4, background: '#fff', border: `2px solid ${FRAME_BLUE}`, cursor: 'nwse-resize', zIndex: 9 }} />
-          </>
+          <div onPointerDown={(e) => bc.frameResizeDown(f.id, e)} style={{ position: 'absolute', right: -6, bottom: -6, width: 14, height: 14, borderRadius: 4, background: '#fff', border: `2px solid ${FRAME_BLUE}`, cursor: 'nwse-resize', zIndex: 9 }} />
         )}
       </div>
     );
@@ -530,18 +531,12 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
       const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
       relPill = (
         <SelectionPill x={mid.x * vp.scale + vp.tx} y={mid.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-          {REL_TYPES.map((t) => (
-            <PillBtn key={t} accent={ACCENT} active={selRel.type === t} onClick={() => setRelType(t)} title={t === 'comm' ? 'Communication path' : t === 'dependency' ? 'Dependency' : '«deploy» — artifact onto node'}>
-              <RelGlyph type={t} color={selRel.type === t ? '#fff' : '#cdd5e0'} />
-            </PillBtn>
-          ))}
+          <PillSelect accent={ACCENT} value={selRel.type} options={relTypeOptions} onChange={(v) => setRelType(v as RelType)} testId="deployment-rel-type" />
           <PillDivider />
           <PillBtn accent={ACCENT} onClick={reverseRel} title="Reverse direction">
             <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M7 7h11l-3-3M17 17H6l3 3" /></svg>
           </PillBtn>
-          <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete relationship">
-            <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-          </PillBtn>
+          <PillDelete label="" onClick={() => { setRels((rs) => rs.filter((r) => r.id !== selRel.id)); bc.setSel(null); }} title="Delete relationship" testId="deployment-rel-delete" />
         </SelectionPill>
       );
     }
@@ -621,6 +616,15 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
       hud={
         <>
           {relPill}
+          {selNode && (() => {
+            const g = geom.get(String(selNode.id))!;
+            const top = shapeOf(selNode) === 'box' ? selNode.y - DEPTH : selNode.y;
+            return (
+              <SelectionPill x={(selNode.x + g.w / 2) * vp.scale + vp.tx} y={top * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
+                <PillDelete onClick={() => deleteNode(selNode.id)} title="Delete (Del)" testId="deployment-node-delete" />
+              </SelectionPill>
+            );
+          })()}
           {selText && (() => {
             const g = textGeom.get(String(selText.id))!;
             return (
@@ -628,19 +632,15 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
                 <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
                   onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
                 <PillDivider />
-                <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)">
-                  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
-                </PillBtn>
+                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="deployment-text-delete" />
               </SelectionPill>
             );
           })()}
           {selFrame && (
             <SelectionPill x={selFrame.x * vp.scale + vp.tx} y={selFrame.y * vp.scale + vp.ty - 16} transform="translate(0,-100%)">
-              {FRAME_ORDER.map((t) => (
-                <PillBtn key={t} accent={FRAME_BLUE} active={selFrame.type === t} onClick={() => setFrameType(t)} title={FRAME_TYPES[t].label}>
-                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinejoin="round"><path d={FRAME_ICON[t]} /></svg>
-                </PillBtn>
-              ))}
+              <PillSelect accent={FRAME_BLUE} width={140} value={selFrame.type} options={frameTypeOptions} onChange={(v) => setFrameType(v as FrameType)} testId="deployment-frame-type" />
+              <PillDivider />
+              <PillDelete label="" onClick={() => { setFrames((fs) => fs.filter((f) => f.id !== selFrame.id)); bc.setSel(null); }} title="Delete container" testId="deployment-frame-delete" />
             </SelectionPill>
           )}
           {bc.link && <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', background: '#10141b', color: '#e6eaf0', borderRadius: 9, padding: '8px 14px', fontSize: 12.5, zIndex: 26 }}>{bc.link.target ? 'Release to connect' : 'Release on a node to connect — or on empty canvas to create one'}</div>}

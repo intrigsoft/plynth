@@ -7,7 +7,10 @@ import {
   EditorShell,
   PaletteTile,
   PillBtn,
+  PillDelete,
   PillDivider,
+  PillSelect,
+  PillToggle,
   RailDivider,
   RailLabel,
   SelectionPill,
@@ -409,8 +412,8 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
 
   /* ---- edge helpers + selection ----------------------------------------- */
   const selRel = sel?.kind === 'edge' ? fc.rels.find((r) => r.id === sel.id) : undefined;
-  const setRelLabel = (id: string, v: string) => mutate((m) => ({ rels: m.rels.map((r) => (r.id === id ? { ...r, label: v } : r)) }));
   const reverseRel = (id: string) => mutate((m) => ({ rels: m.rels.map((r) => (r.id === id ? { ...r, from: r.to, to: r.from } : r)) }));
+  const toggleDash = (id: string) => mutate((m) => ({ rels: m.rels.map((r) => (r.id === id ? { ...r, dashed: !r.dashed } : r)) }));
   const removeRel = (id: string) => {
     mutate((m) => ({ rels: m.rels.filter((r) => r.id !== id) }));
     bc.setSel(null);
@@ -487,7 +490,7 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
           onPointerEnter={() => bc.setHover('rel:' + r.id)}
           onPointerLeave={() => bc.setHover(null)}
         />
-        <path d={`M${p1.x} ${p1.y} L${p2.x} ${p2.y}`} stroke={stroke} strokeWidth={selected ? 2.6 : hov ? 2.2 : 1.6} fill="none" markerEnd={active ? 'url(#fc-arrow-sel)' : 'url(#fc-arrow)'} style={{ pointerEvents: 'none' }} />
+        <path d={`M${p1.x} ${p1.y} L${p2.x} ${p2.y}`} stroke={stroke} strokeWidth={selected ? 2.6 : hov ? 2.2 : 1.6} fill="none" strokeDasharray={r.dashed ? '6 5' : undefined} markerEnd={active ? 'url(#fc-arrow-sel)' : 'url(#fc-arrow)'} style={{ pointerEvents: 'none' }} />
       </g>
     );
   });
@@ -588,15 +591,6 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
           (['top', 'right', 'bottom', 'left'] as const).map((side) => (
             <div key={side} onPointerDown={(e) => bc.portDown(String(n.id), e)} style={{ position: 'absolute', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'crosshair', zIndex: 8, ...portPos[side] }} />
           ))}
-        {selected && (
-          <button
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => removeNode(n.id)}
-            style={{ position: 'absolute', top: -11, right: -11, width: 23, height: 23, borderRadius: '50%', background: '#10141b', border: '2px solid #fff', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, zIndex: 9 }}
-          >
-            ×
-          </button>
-        )}
       </div>
     );
   };
@@ -719,9 +713,7 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
       <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
         <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT} onPick={(id) => mutate((m) => ({ texts: m.texts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)) }))} />
         <PillDivider />
-        <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { mutate((m) => ({ texts: m.texts.filter((t) => String(t.id) !== String(selText.id)) })); bc.setSel(null); }} title="Delete (Del)">
-          <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
-        </PillBtn>
+        <PillDelete label="" onClick={() => { mutate((m) => ({ texts: m.texts.filter((t) => String(t.id) !== String(selText.id)) })); bc.setSel(null); }} title="Delete (Del)" testId="flowchart-text-delete" />
       </SelectionPill>
     );
   }
@@ -731,15 +723,9 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     const m = geom.get(String(selNode.id))!;
     kindPill = (
       <SelectionPill x={(selNode.x + m.w / 2) * vp.scale + vp.tx} y={selNode.y * vp.scale + vp.ty - 14} transform="translate(-50%,-100%)">
-        {KORDER.map((k) => {
-          const K = KINDS[k];
-          const on = selNode.kind === k;
-          return (
-            <PillBtn key={k} accent={ACCENT} active={on} onClick={() => setKind(selNode.id, k)} title={K.label}>
-              <KindGlyph iconD1={K.iconD1} iconD2={K.iconD2} color={on ? '#fff' : '#cdd5e0'} size={16} />
-            </PillBtn>
-          );
-        })}
+        <PillSelect label="Shape" accent={ACCENT} value={selNode.kind} options={KORDER.map((k) => ({ value: k, label: KINDS[k].label }))} onChange={(v) => setKind(selNode.id, v as FlowKind)} testId="flowchart-node-shape" />
+        <PillDivider />
+        <PillDelete label="" onClick={() => removeNode(selNode.id)} title="Delete (Del)" testId="flowchart-node-delete" />
       </SelectionPill>
     );
   }
@@ -750,21 +736,12 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     if (pts) {
       relPill = (
         <SelectionPill x={pts.mid.x * vp.scale + vp.tx} y={pts.mid.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-          <input
-            placeholder="label…"
-            value={selRel.label ?? ''}
-            onChange={(e) => setRelLabel(selRel.id, e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-            }}
-            style={{ width: 104, font: '600 12px var(--ui)', outline: 'none', border: 'none', background: '#1a212b', color: '#eceff4', borderRadius: 6, padding: '5px 8px' }}
-          />
+          <PillToggle label="Dashed" accent={ACCENT} on={!!selRel.dashed} onToggle={() => toggleDash(selRel.id)} testId="flowchart-rel-dashed" />
+          <PillDivider />
           <PillBtn accent={ACCENT} onClick={() => reverseRel(selRel.id)} title="Reverse direction">
             <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M7 7h11l-3-3M17 17H6l3 3" /></svg>
           </PillBtn>
-          <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => removeRel(selRel.id)} title="Delete connector">
-            <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-          </PillBtn>
+          <PillDelete label="" onClick={() => removeRel(selRel.id)} title="Delete connector" testId="flowchart-rel-delete" />
         </SelectionPill>
       );
     }
@@ -785,9 +762,7 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
           <button key={col} onClick={() => setLaneColor(selLaneObj.id, col)} title="Recolor lane" style={{ width: 18, height: 18, borderRadius: 5, background: col, border: `2px solid ${selLaneObj.color === col ? '#fff' : 'transparent'}`, cursor: 'pointer', padding: 0 }} />
         ))}
         <PillDivider />
-        <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { removeLane(selLaneObj.id); setSelLane(null); }} title="Delete lane">
-          <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
-        </PillBtn>
+        <PillDelete label="" onClick={() => { removeLane(selLaneObj.id); setSelLane(null); }} title="Delete lane" testId="flowchart-lane-delete" />
       </SelectionPill>
     );
   }
