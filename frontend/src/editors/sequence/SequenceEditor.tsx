@@ -52,7 +52,7 @@ type Editing =
   | null;
 
 type Gesture =
-  | { mode: 'message'; fromX: number; y: number; toX: number; tgt: number | null }
+  | { mode: 'message'; fromX: number; y: number; toX: number; tgt: number | null; src: number }
   | { mode: 'activation'; lifeId: number; top: number; bottom: number }
   | null;
 
@@ -305,7 +305,7 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
       if (d.mode === 'message') {
         const tgt = hitTestLife(w.x);
         const from = life(d.id);
-        setGesture({ mode: 'message', fromX: from ? from.x : 0, y: d.startY, toX: w.x, tgt });
+        setGesture({ mode: 'message', fromX: from ? from.x : 0, y: d.startY, toX: w.x, tgt, src: d.id });
       } else if (d.mode === 'activation') {
         const top = Math.min(d.startY, snapY(w.y));
         const bottom = Math.max(d.startY, snapY(w.y));
@@ -541,7 +541,7 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
     const isTarget = gesture?.mode === 'message' && gesture.tgt === l.id;
     const accentLine = selected || isTarget;
     const headLeft = l.x - w / 2;
-    const stripW = Math.max(54, w);
+    const stripW = 40;
     const isActor = l.kind === 'actor';
     const editingName = editing?.kind === 'lifeline' && editing.id === l.id;
     const noTrans = draggingId === l.id || vp.panning;
@@ -552,9 +552,7 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
         <div onPointerDown={(e) => stripDown(l.id, e)} onPointerMove={(e) => stripMove(l.id, e)} onPointerLeave={() => stripLeave(l.id)}
           style={{ position: 'absolute', transform: `translate(${l.x - stripW / 2}px,${LINE_TOP}px)`, width: stripW, height: lineH, cursor: panMode ? 'grab' : 'crosshair', zIndex: 3 }} />
         {showNub && (
-          <div style={{ position: 'absolute', transform: `translate(${l.x - 11}px,${(hover?.pointerY ?? LINE_TOP) - 11}px)`, width: 22, height: 22, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', zIndex: 6, boxShadow: '0 1px 4px rgba(16,20,27,.2)' }}>
-            <svg width={13} height={13} viewBox="0 0 24 24" fill="none"><path d="M5 12h12M12 7l5 5-5 5" stroke={ACCENT} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" /></svg>
-          </div>
+          <div style={{ position: 'absolute', transform: `translate(${l.x - 7}px,${(hover?.pointerY ?? LINE_TOP) - 7}px) rotate(45deg)`, width: 14, height: 14, borderRadius: 2, background: ACCENT, border: '2px solid #fff', pointerEvents: 'none', zIndex: 6, boxShadow: '0 1px 4px rgba(16,20,27,.28)', animation: 'pulse 1.6s ease-out infinite' }} />
         )}
         <div onPointerDown={(e) => headDown(l.id, e)} onDoubleClick={(e) => { e.stopPropagation(); beginEdit({ kind: 'lifeline', id: l.id }); }}
           style={{ position: 'absolute', transform: `translate(${headLeft}px,${HEAD_TOP}px)`, width: w, height: HEAD_H, display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', cursor: panMode ? 'grab' : 'move', zIndex: 5, transition: noTrans ? 'none' : 'transform .3s cubic-bezier(.4,0,.2,1)', borderRadius: 9, boxShadow: selected ? '0 0 0 3px rgba(14,148,136,.18)' : isTarget ? '0 0 0 3px rgba(14,148,136,.32)' : 'none' }}>
@@ -712,12 +710,25 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
   /* gesture previews */
   let gestureEl: JSX.Element | null = null;
   if (gesture?.mode === 'message') {
-    let ex = gesture.toX;
-    if (gesture.tgt != null) { const tl = seq.lifelines.find((l) => l.id === gesture.tgt); if (tl) ex = tl.x; }
+    const isSelf = gesture.tgt != null && gesture.tgt === gesture.src;
+    let dPath: string;
+    let endX: number;
+    let endY: number;
+    if (isSelf) {
+      dPath = `M${gesture.fromX.toFixed(1)} ${gesture.y.toFixed(1)} h44 v22 h-44`;
+      endX = gesture.fromX;
+      endY = gesture.y + 22;
+    } else {
+      let ex = gesture.toX;
+      if (gesture.tgt != null) { const tl = seq.lifelines.find((l) => l.id === gesture.tgt); if (tl) ex = tl.x; }
+      dPath = `M${gesture.fromX.toFixed(1)} ${gesture.y.toFixed(1)} L${ex.toFixed(1)} ${gesture.y.toFixed(1)}`;
+      endX = ex;
+      endY = gesture.y;
+    }
     gestureEl = (
       <svg style={{ position: 'absolute', left: 0, top: 0, width: 100, height: 100, overflow: 'visible', pointerEvents: 'none', zIndex: 12 }}>
-        <path d={`M${gesture.fromX.toFixed(1)} ${gesture.y.toFixed(1)} L${ex.toFixed(1)} ${gesture.y.toFixed(1)}`} fill="none" stroke={ACCENT} strokeWidth={2} strokeDasharray="6 5" />
-        <circle cx={ex} cy={gesture.y} r={4.5} fill={ACCENT} />
+        <path d={dPath} fill="none" stroke={ACCENT} strokeWidth={2} strokeDasharray="6 5" />
+        <circle cx={endX} cy={endY} r={4.5} fill={ACCENT} />
       </svg>
     );
   } else if (gesture?.mode === 'activation') {
@@ -731,7 +742,9 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
   const selFrame = sel?.kind === 'frame' ? seq.frames.find((f) => f.id === sel.id) : undefined;
 
   const hintText = gesture?.mode === 'message'
-    ? gesture.tgt != null ? 'Release to send the message' : 'Release on a column to message it — or on empty canvas to add a new column'
+    ? gesture.tgt != null && gesture.tgt === gesture.src
+      ? 'Release to add a self-message'
+      : gesture.tgt != null ? 'Release to send the message' : 'Release on a column to message it — or on empty canvas to add a new column'
     : gesture?.mode === 'activation' ? 'Release to add an activation' : '';
 
   /* ---- palette rail ------------------------------------------------------- */
