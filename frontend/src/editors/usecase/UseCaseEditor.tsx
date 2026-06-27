@@ -2,16 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as RPointerEvent } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
+  DEFAULT_STYLE_ID,
+  EditableLabel,
   EditorShell,
   PaletteTile,
   PillBtn,
+  PillDivider,
   RailDivider,
   RailLabel,
   SelectionPill,
+  StylePicker,
+  TextNode,
   autoArrange,
   bbox,
   center,
   ellipseEdge,
+  loadTextStyles,
+  measureText,
+  textStyleById,
+  textStyleCss,
   useBoxCanvas,
   useViewport,
   type ExportFormat,
@@ -31,6 +40,7 @@ import {
   rtypeOf,
   RORDER,
   type RelType,
+  type TextNode as UcText,
   type UseCaseKind,
   type UseCaseModel,
   type UseCaseNode,
@@ -52,6 +62,11 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
   const [selSys, setSelSys] = useState(false);
   const [sysEdit, setSysEdit] = useState(false);
   const [sysEditVal, setSysEditVal] = useState('');
+  const [textEdit, setTextEdit] = useState<{ id: number } | null>(null);
+  const [textEditVal, setTextEditVal] = useState('');
+  const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
+  const [relEditVal, setRelEditVal] = useState('');
+  const styles = useMemo(() => loadTextStyles(), []);
   const idc = useRef(maxId(uc));
 
   const ucRef = useRef(uc);
@@ -59,6 +74,7 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
   const patch = useCallback((next: Partial<UseCaseModel>) => onModel({ ...ucRef.current, ...next } as DiagramModel), [onModel]);
   const setNodes = (fn: (n: UseCaseNode[]) => UseCaseNode[]) => patch({ nodes: fn(ucRef.current.nodes) });
   const setRels = (fn: (r: UseCaseRel[]) => UseCaseRel[]) => patch({ rels: fn(ucRef.current.rels) });
+  const setTexts = (fn: (t: UcText[]) => UcText[]) => patch({ texts: fn(ucRef.current.texts) });
 
   /* geometry */
   const geom = useMemo(() => {
@@ -70,6 +86,15 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
     return m;
   }, [uc.nodes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
+  const textGeom = useMemo(() => {
+    const m = new Map<string, Rect>();
+    for (const t of uc.texts) {
+      const sz = measureText(t.content, textStyleById(styles, t.styleId));
+      m.set(String(t.id), { x: t.x, y: t.y, w: sz.w, h: sz.h });
+    }
+    return m;
+  }, [uc.texts, styles]);
+  const textRectOf = useCallback((id: string) => textGeom.get(id) ?? null, [textGeom]);
   const hitNode = useCallback((wx: number, wy: number, exclude?: string) => {
     for (let i = uc.nodes.length - 1; i >= 0; i--) {
       const n = uc.nodes[i];
@@ -94,12 +119,23 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
     const id = 'r' + ++idc.current;
     setRels((rs) => [...rs, { id, from: Number(from), to: Number(to), type: defaultRelType(a?.kind, b?.kind) }]);
   }, [uc]); // eslint-disable-line
+  /** Create a text node and immediately open its inline editor (palette drop + dbl-click). */
+  const createText = useCallback((x: number, y: number): string => {
+    const id = ++idc.current;
+    setTexts((ts) => [...ts, { id, x, y, content: 'Text', styleId: DEFAULT_STYLE_ID }]);
+    setTextEdit({ id });
+    setTextEditVal('Text');
+    return String(id);
+  }, [uc]); // eslint-disable-line
 
   const bc = useBoxCanvas({
     vp, tool, setTool, rectOf, hitNode,
     onMoveNode: (id, x, y) => setNodes((ns) => ns.map((n) => (String(n.id) === id ? { ...n, x, y } : n))),
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createNode(kind, x, y),
+    onCreateText: (x, y) => createText(x, y),
+    textRectOf,
+    onMoveText: (id, x, y) => setTexts((ts) => ts.map((t) => (String(t.id) === id ? { ...t, x, y } : t))),
     onDelete: (sel) => {
       if (!sel) return;
       if (sel.kind === 'node') {
@@ -107,8 +143,9 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
         setNodes((ns) => ns.filter((n) => n.id !== nid));
         setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid));
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
+      else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
     },
-    editing: !!edit || sysEdit,
+    editing: !!edit || sysEdit || !!textEdit || !!relEdit,
   });
   const { sel } = bc;
 
@@ -173,9 +210,44 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
     setEdit(null);
   };
 
+  /* ---- text-node inline edit ---- */
+  const beginTextEdit = (id: number) => {
+    const t = uc.texts.find((x) => Number(x.id) === id);
+    if (!t) return;
+    setTextEdit({ id });
+    setTextEditVal(t.content);
+    bc.setSel({ kind: 'text', id: String(id) });
+    setSelSys(false);
+  };
+  const commitTextEdit = () => {
+    if (!textEdit) return;
+    const { id } = textEdit;
+    setTexts((ts) => ts.map((t) => (Number(t.id) === id ? { ...t, content: textEditVal.trim() ? textEditVal : t.content } : t)));
+    setTextEdit(null);
+  };
+
+  /* ---- relationship-label inline edit (double-click a connector) ---- */
+  const beginRelLabel = (id: string) => {
+    const r = uc.rels.find((x) => x.id === id);
+    if (!r) return;
+    if (edit) commitEdit();
+    setRelEdit({ id });
+    setRelEditVal(r.label ?? '');
+    bc.setSel({ kind: 'edge', id });
+    setSelSys(false);
+  };
+  const commitRelLabel = () => {
+    if (!relEdit) return;
+    const { id } = relEdit;
+    const v = relEditVal.trim();
+    setRels((rs) => rs.map((r) => (r.id === id ? { ...r, label: v } : r)));
+    setRelEdit(null);
+  };
+
   /* node + relationship helpers */
   const selNode = sel?.kind === 'node' ? uc.nodes.find((n) => String(n.id) === sel.id) : undefined;
   const selRel = sel?.kind === 'edge' ? uc.rels.find((r) => r.id === sel.id) : undefined;
+  const selText = sel?.kind === 'text' ? uc.texts.find((t) => String(t.id) === sel.id) : undefined;
   const setKind = (id: number, kind: UseCaseKind) => setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, kind } : n)));
   const setRelType = (id: string, type: RelType) => setRels((rs) => rs.map((r) => (r.id === id ? { ...r, type } : r)));
   const reverseRel = (id: string) => setRels((rs) => rs.map((r) => (r.id === id ? { ...r, from: r.to, to: r.from } : r)));
@@ -269,19 +341,42 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
     const active = selected || hov;
     const rt = rtypeOf(r.type);
     const stroke = active ? ACCENT : '#2a3344';
-    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
     return (
       <g key={r.id}>
-        <path d={`M${p1.x} ${p1.y} L${p2.x} ${p2.y}`} stroke="transparent" strokeWidth={15} fill="none" style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+        <path d={`M${p1.x} ${p1.y} L${p2.x} ${p2.y}`} stroke="transparent" strokeWidth={26} fill="none" style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
           onPointerDown={(e) => { e.stopPropagation(); bc.setSel({ kind: 'edge', id: r.id }); }}
+          onDoubleClick={(e) => { e.stopPropagation(); beginRelLabel(r.id); }}
           onPointerEnter={() => bc.setHover('rel:' + r.id)} onPointerLeave={() => bc.setHover(null)} />
         <path d={`M${p1.x} ${p1.y} L${p2.x} ${p2.y}`} stroke={stroke} strokeWidth={selected ? 2.4 : hov ? 2.1 : 1.5} fill="none"
           strokeDasharray={rt.dash || undefined} markerEnd={relMarkerEnd(r.type, active)} style={{ pointerEvents: 'none' }} />
-        {rt.stereo && (
-          <text x={mid.x} y={mid.y - 5} textAnchor="middle" fontFamily="var(--mono)" fontSize={10.5} fontWeight={500} fill="#41506a"
-            style={{ paintOrder: 'stroke', stroke: '#f4f6f8', strokeWidth: 4, strokeLinejoin: 'round' }}>{rt.stereo}</text>
-        )}
       </g>
+    );
+  });
+
+  /* ---- render: connector labels (HTML overlays, double-click to edit) ---- */
+  /* The displayed label folds in the relationship stereotype («include» …);
+     the inline editor only ever edits the user-supplied `rel.label`. */
+  const relLabels = uc.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const rt = rtypeOf(r.type);
+    const userLabel = r.label?.trim();
+    const display = userLabel ? (rt.stereo ? rt.stereo + ' ' + userLabel : userLabel) : rt.stereo;
+    const editing = relEdit?.id === r.id;
+    if (!display && !editing) return null;
+    const ca = center(a), cb = center(b);
+    const p1 = ellipseEdge(a, cb.x, cb.y), p2 = ellipseEdge(b, ca.x, ca.y);
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    return (
+      <EditableLabel key={r.id} x={mid.x} y={mid.y - 5} label={display}
+        active={selected || hov} accent={ACCENT} editing={editing} editValue={relEditVal}
+        onPointerDown={(e) => { e.stopPropagation(); bc.setSel({ kind: 'edge', id: r.id }); }}
+        onBeginEdit={(e) => { e.stopPropagation(); beginRelLabel(r.id); }}
+        onEditChange={setRelEditVal} onCommit={commitRelLabel} onCancel={() => setRelEdit(null)}
+        testId={'uc-rel-label-' + r.id} />
     );
   });
 
@@ -331,14 +426,31 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
             <span style={nameStyle}>{n.name}</span>
           )}
         </div>
-        {selected && (
-          <button onPointerDown={(ev) => ev.stopPropagation()} onClick={() => { setNodes((ns) => ns.filter((x) => x.id !== n.id)); setRels((rs) => rs.filter((r) => r.from !== n.id && r.to !== n.id)); bc.setSel(null); }}
-            style={{ position: 'absolute', top: -11, right: -11, width: 23, height: 23, borderRadius: '50%', background: '#10141b', border: '2px solid #fff', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, zIndex: 9 }}>×</button>
-        )}
         {showPorts && ports.map((p) => (
           <div key={p.key} onPointerDown={(ev) => bc.portDown(String(n.id), ev)} style={portStyle(p.pos)} />
         ))}
       </div>
+    );
+  };
+
+  /* ---- render text node ---- */
+  const renderText = (t: UcText) => {
+    const g = textGeom.get(String(t.id))!;
+    const st = textStyleById(styles, t.styleId);
+    const selected = sel?.kind === 'text' && sel.id === String(t.id);
+    const hov = bc.hover === 'text:' + String(t.id);
+    return (
+      <TextNode key={t.id} x={t.x} y={t.y} width={g.w} height={g.h} style={st} content={t.content}
+        accent={ACCENT} selected={selected} hovered={hov} editing={textEdit?.id === Number(t.id)} editValue={textEditVal}
+        panMode={tool === 'pan'}
+        onPointerDown={(ev) => bc.textDown(String(t.id), ev)}
+        onPointerEnter={() => bc.setHover('text:' + String(t.id))}
+        onPointerLeave={() => bc.setHover(null)}
+        onBeginEdit={() => beginTextEdit(Number(t.id))}
+        onEditChange={setTextEditVal}
+        onCommit={commitTextEdit}
+        onCancel={() => setTextEdit(null)}
+        testId={'uc-text-' + t.id} />
     );
   };
 
@@ -353,6 +465,10 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
             <KindGlyph kind={k} color={selNode.kind === k ? '#fff' : '#cdd5e0'} size={17} />
           </PillBtn>
         ))}
+        <PillDivider />
+        <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { const nid = selNode.id; setNodes((ns) => ns.filter((x) => x.id !== nid)); setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid)); bc.setSel(null); }} title="Delete (Del)">
+          <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13" /></svg>
+        </PillBtn>
       </SelectionPill>
     );
   }
@@ -403,8 +519,14 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
   /* ---- palette ghost ---- */
   const ghost = bc.palette && (
     <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, opacity: 0.95 }}>
-      <KindGlyph kind={bc.palette.kind === 'actor' ? 'actor' : 'usecase'} color={KIND_COLOR[bc.palette.kind === 'actor' ? 'actor' : 'usecase']} size={26} />
-      <span style={{ fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 700, color: '#1b2230' }}>{KIND_LABEL[bc.palette.kind === 'actor' ? 'actor' : 'usecase']}</span>
+      {bc.palette.kind === 'text' ? (
+        <div style={{ ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)), padding: '2px 6px', border: `1.5px dashed ${ACCENT}`, borderRadius: 6, background: 'rgba(255,255,255,.85)' }}>Text</div>
+      ) : (
+        <>
+          <KindGlyph kind={bc.palette.kind === 'actor' ? 'actor' : 'usecase'} color={KIND_COLOR[bc.palette.kind === 'actor' ? 'actor' : 'usecase']} size={26} />
+          <span style={{ fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 700, color: '#1b2230' }}>{KIND_LABEL[bc.palette.kind === 'actor' ? 'actor' : 'usecase']}</span>
+        </>
+      )}
     </div>
   );
 
@@ -417,6 +539,11 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
           <KindGlyph kind={k} color="#5b6678" size={22} />
         </PaletteTile>
       ))}
+      <RailDivider />
+      <RailLabel>TEXT</RailLabel>
+      <PaletteTile label="TEXT" onPointerDown={(e) => bc.startPaletteDrag('text', e)}>
+        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
+      </PaletteTile>
       <RailDivider />
       <RailLabel>SYSTEM</RailLabel>
       <button onClick={toggleSystem} title="Toggle system boundary"
@@ -431,8 +558,8 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
       onFit={fitAll} onAutoLayout={() => void autoLayout()} assistantDocName={docName}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (sysEdit) commitSysRename(); setSelSys(false); bc.bgDown(e); }}
-      onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createNode('usecase', w.x - 80, w.y - 33); bc.setSel({ kind: 'node', id }); beginEdit(Number(id)); }}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (sysEdit) commitSysRename(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); setSelSys(false); bc.bgDown(e); }}
+      onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
       world={
         <>
           {/* system boundary (behind nodes) */}
@@ -459,7 +586,9 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
             <UcDefs />
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
+          {relLabels}
           {uc.nodes.map(renderNode)}
+          {uc.texts.map(renderText)}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
             const p1 = ellipseEdge(a, bc.link.pos.x, bc.link.pos.y);
@@ -472,6 +601,19 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
           {kindPill}
           {relPill}
           {sysPill}
+          {selText && (() => {
+            const g = textGeom.get(String(selText.id))!;
+            return (
+              <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
+                <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
+                  onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
+                <PillDivider />
+                <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)">
+                  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></svg>
+                </PillBtn>
+              </SelectionPill>
+            );
+          })()}
           {bc.link && <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', background: '#10141b', color: '#e6eaf0', borderRadius: 9, padding: '8px 14px', fontSize: 12.5, zIndex: 26 }}>{bc.link.target ? 'Release to connect' : 'Release on a shape to connect — or on empty canvas to add a use case'}</div>}
           {ghost}
         </>

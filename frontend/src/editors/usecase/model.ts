@@ -1,4 +1,5 @@
 import type { DiagramModel } from '@plynth/shared';
+import type { TextStyleId } from '../engine';
 import { clamp } from '../engine';
 
 /* =============================================================================
@@ -23,6 +24,17 @@ export interface UseCaseRel {
   from: number;
   to: number;
   type: RelType;
+  label?: string;
+}
+
+/** A free-floating styled text annotation. `styleId` references one of the
+ *  project's shared text styles; only the id is stored (see `engine/textstyles`). */
+export interface TextNode {
+  id: string | number;
+  x: number;
+  y: number;
+  content: string;
+  styleId: TextStyleId;
 }
 
 export interface UseCaseSystem {
@@ -38,6 +50,7 @@ export interface UseCaseModel {
   type: 'usecase';
   nodes: UseCaseNode[];
   rels: UseCaseRel[];
+  texts: TextNode[];
   system: UseCaseSystem | null;
 }
 
@@ -47,6 +60,7 @@ export function asUseCase(m: DiagramModel): UseCaseModel {
     type: 'usecase',
     nodes: a.nodes ?? [],
     rels: a.rels ?? [],
+    texts: a.texts ?? [],
     system: a.system ?? null,
   };
 }
@@ -106,5 +120,5 @@ export function measure(n: UseCaseNode): Measured {
 }
 
 export function maxId(m: UseCaseModel): number {
-  return Math.max(100, ...m.nodes.map((n) => n.id));
+  return Math.max(100, ...m.nodes.map((n) => n.id), ...m.texts.map((t) => Number(t.id)));
 }

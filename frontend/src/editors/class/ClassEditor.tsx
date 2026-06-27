@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
+  EditableLabel,
   EditorShell,
   PaletteTile,
   PillBtn,
@@ -13,6 +14,7 @@ import {
   bbox,
   center,
   descendants,
+  perp,
   rectEdge,
   useBoxCanvas,
   useViewport,
@@ -61,6 +63,8 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
   const [editVal, setEditVal] = useState('');
   const [addAttr, setAddAttr] = useState('');
   const [addMethod, setAddMethod] = useState('');
+  const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
+  const [relEditVal, setRelEditVal] = useState('');
   const idc = useRef(maxClassId(cls));
 
   const patch = useCallback((next: Partial<ClassModel>) => onModel({ ...cls, ...next } as DiagramModel), [cls, onModel]);
@@ -144,7 +148,7 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
     },
-    editing: !!edit,
+    editing: !!edit || !!relEdit,
   });
   const { sel } = bc;
 
@@ -207,6 +211,23 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
     if (kind === 'attr') setAddAttr(''); else setAddMethod('');
   };
 
+  /* ---- relationship-label inline edit (double-click a connector) ---- */
+  const beginRelLabel = (id: string) => {
+    const r = cls.rels.find((x) => x.id === id);
+    if (!r) return;
+    if (edit) commitEdit();
+    setRelEdit({ id });
+    setRelEditVal(r.label ?? '');
+    bc.setSel({ kind: 'edge', id });
+  };
+  const commitRelLabel = () => {
+    if (!relEdit) return;
+    const { id } = relEdit;
+    const v = relEditVal.trim();
+    setRels((rs) => rs.map((r) => (r.id === id ? { ...r, label: v } : r)));
+    setRelEdit(null);
+  };
+
   /* ---- relationship + frame selection helpers ---- */
   const selRel = sel?.kind === 'edge' ? cls.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? cls.frames.find((f) => f.id === sel.id) : undefined;
@@ -231,11 +252,11 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
     const labels: { x: number; y: number; t: string }[] = [];
     if (r.fromMult) labels.push({ x: p1.x + ux * 22 + px * 11, y: p1.y + uy * 22 + py * 11 + 3, t: r.fromMult });
     if (r.toMult) labels.push({ x: p2.x - ux * 22 + px * 11, y: p2.y - uy * 22 + py * 11 + 3, t: r.toMult });
-    if (r.label) labels.push({ x: (p1.x + p2.x) / 2 + px * 12, y: (p1.y + p2.y) / 2 + py * 12 + 3, t: r.label });
     return (
       <g key={r.id}>
-        <path d={`M${p1.x} ${p1.y} L${p2.x} ${p2.y}`} stroke="transparent" strokeWidth={16} fill="none" style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+        <path d={`M${p1.x} ${p1.y} L${p2.x} ${p2.y}`} stroke="transparent" strokeWidth={26} fill="none" style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
           onPointerDown={(e) => { e.stopPropagation(); bc.setSel({ kind: 'edge', id: r.id }); }}
+          onDoubleClick={(e) => { e.stopPropagation(); beginRelLabel(r.id); }}
           onPointerEnter={() => bc.setHover('rel:' + r.id)} onPointerLeave={() => bc.setHover(null)} />
         <path d={`M${p1.x} ${p1.y} L${p2.x} ${p2.y}`} stroke={stroke} strokeWidth={selected ? 2.6 : hov ? 2.2 : 1.5} fill="none"
           strokeDasharray={m.dash} markerStart={m.markerStart} markerEnd={m.markerEnd} style={{ pointerEvents: 'none' }} />
@@ -244,6 +265,29 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
             style={{ paintOrder: 'stroke', stroke: '#f4f6f8', strokeWidth: 3.5 }}>{lb.t}</text>
         ))}
       </g>
+    );
+  });
+
+  /* ---- render: connector labels (HTML overlays, double-click to edit) ---- */
+  const relLabels = cls.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const editing = relEdit?.id === r.id;
+    if (!r.label && !editing) return null;
+    const ca = center(a), cb = center(b);
+    const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y);
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const pp = perp(p1, p2);
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    return (
+      <EditableLabel key={r.id} x={mid.x + pp.x * 12} y={mid.y + pp.y * 12} label={r.label ?? ''}
+        active={selected || hov} accent={ACCENT} editing={editing} editValue={relEditVal}
+        onPointerDown={(e) => { e.stopPropagation(); bc.setSel({ kind: 'edge', id: r.id }); }}
+        onBeginEdit={(e) => { e.stopPropagation(); beginRelLabel(r.id); }}
+        onEditChange={setRelEditVal} onCommit={commitRelLabel} onCancel={() => setRelEdit(null)}
+        testId={'class-rel-label-' + r.id} />
     );
   });
 
@@ -385,7 +429,7 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
       onFit={fitAll} onAutoLayout={() => void autoLayout()} assistantDocName={docName}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); bc.bgDown(e); }}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); bc.bgDown(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createClass('class', w.x - 78, w.y - 30); bc.setSel({ kind: 'node', id }); beginEdit(Number(id), { t: 'name' }); }}
       world={
         <>
@@ -405,6 +449,7 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
             <ClassMarkers />
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
+          {relLabels}
           {cls.classes.map(renderClass)}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;

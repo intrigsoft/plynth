@@ -7,6 +7,7 @@ import { useAuth } from '../lib/session';
 import { AppShell } from './AppShell';
 import { DocumentCard } from './components/DocumentCard';
 import { ConfirmModal } from './components/ConfirmModal';
+import { TextStylesModal } from './components/TextStylesModal';
 import { Back, Dots, Folder, Plus, TypeIcon } from '../lib/icons';
 import { timeAgo } from '../lib/time';
 
@@ -23,6 +24,7 @@ export function ProjectScreen() {
   const [projMenu, setProjMenu] = useState(false);
   const [confirmProj, setConfirmProj] = useState(false);
   const [confirmDoc, setConfirmDoc] = useState<DiagramDoc | null>(null);
+  const [stylesOpen, setStylesOpen] = useState(false);
 
   useEffect(() => { if (p) { setName(p.name); setDesc(p.desc); } }, [p?.id]); // eslint-disable-line
 
@@ -73,6 +75,18 @@ export function ProjectScreen() {
               />
             </div>
             <div style={{ display: 'flex', gap: 9, alignItems: 'center' }}>
+              <button
+                className="btn"
+                style={{ padding: 9 }}
+                title="Text styles"
+                aria-label="Text styles"
+                data-testid="text-styles-button"
+                onClick={() => setStylesOpen(true)}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M5 7V5h14v2M9 19h6M12 5v14" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
               <div style={{ position: 'relative' }}>
                 <button className="btn" style={{ padding: 9 }} onClick={() => setProjMenu((v) => !v)}><Dots size={18} /></button>
                 {projMenu && (
@@ -143,6 +157,7 @@ export function ProjectScreen() {
         <ConfirmModal title={`Delete "${confirmDoc.name}"?`} body="This document and its contents will be permanently deleted. This can't be undone."
           onCancel={() => setConfirmDoc(null)} onConfirm={async () => { await deleteDoc(p.id, confirmDoc.id); setConfirmDoc(null); }} />
       )}
+      {stylesOpen && <TextStylesModal onClose={() => setStylesOpen(false)} />}
     </AppShell>
   );
 }

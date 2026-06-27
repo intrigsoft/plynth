@@ -24,17 +24,17 @@ export function emptyModel(type: DiagramType): DiagramModel {
     case 'class':
       return { type, classes: [], rels: [], frames: [] };
     case 'erd':
-      return { type, entities: [], rels: [], frames: [] };
+      return { type, entities: [], rels: [], texts: [], frames: [] };
     case 'deployment':
-      return { type, nodes: [], rels: [], frames: [] };
+      return { type, nodes: [], rels: [], texts: [], frames: [] };
     case 'component':
-      return { type, components: [], rels: [], frames: [] };
+      return { type, components: [], rels: [], texts: [], frames: [] };
     case 'sequence':
       return { type, lifelines: [], messages: [], activations: [], frames: [] };
     case 'flowchart':
-      return { type, nodes: [], rels: [], pool: null };
+      return { type, nodes: [], rels: [], texts: [], pool: null };
     case 'usecase':
-      return { type, nodes: [], rels: [], system: null };
+      return { type, nodes: [], rels: [], texts: [], system: null };
   }
 }
 

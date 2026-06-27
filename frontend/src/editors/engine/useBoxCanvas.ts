@@ -4,7 +4,7 @@ import type { Rect } from './geometry';
 import type { Tool } from './ui';
 import type { Viewport } from './useViewport';
 
-export type Sel = { kind: 'node' | 'edge' | 'frame'; id: string } | null;
+export type Sel = { kind: 'node' | 'edge' | 'frame' | 'text'; id: string } | null;
 
 export interface BoxCanvasOpts {
   vp: Viewport;
@@ -18,6 +18,11 @@ export interface BoxCanvasOpts {
   onCreateEdge: (from: string, to: string) => void;
   /** create a node of `kind` at world x,y; return its new id (link-to-empty + palette drop) */
   onCreateNode?: (kind: string, x: number, y: number) => string | null;
+  /** create a free-text node at world x,y; return its new id (TEXT palette drop) */
+  onCreateText?: (x: number, y: number) => string | null;
+  /** measured world rect of a text node by id (text-node move) */
+  textRectOf?: (id: string) => Rect | null;
+  onMoveText?: (id: string, x: number, y: number) => void;
   onCreateFrame?: (x: number, y: number) => string | null;
   frameRectOf?: (id: string) => Rect | null;
   onMoveFrame?: (id: string, x: number, y: number) => void;
@@ -41,6 +46,7 @@ export interface BoxCanvasOpts {
 
 type Act =
   | { t: 'move'; id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean }
+  | { t: 'text-move'; id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean }
   | { t: 'frame-move'; id: string; sx: number; sy: number; ox: number; oy: number; kids: Array<{ kind: 'node' | 'frame'; id: string; ox: number; oy: number }> }
   | { t: 'frame-resize'; id: string; sx: number; sy: number; ow: number; oh: number }
   | { t: 'link'; fromId: string }
@@ -57,6 +63,7 @@ export interface BoxCanvas {
   link: { fromId: string; pos: { x: number; y: number }; target: string | null } | null;
   palette: { kind: string; cx: number; cy: number } | null;
   nodeDown: (id: string, e: RPointerEvent) => void;
+  textDown: (id: string, e: RPointerEvent) => void;
   portDown: (id: string, e: RPointerEvent) => void;
   frameDown: (id: string, e: RPointerEvent) => void;
   frameResizeDown: (id: string, e: RPointerEvent) => void;
@@ -97,6 +104,12 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
         if (!a.moved && Math.abs(e.clientX - a.sx) + Math.abs(e.clientY - a.sy) > 3) a.moved = true;
         setDragging(a.id);
         opt.onMoveNode(a.id, a.ox + dx, a.oy + dy);
+      } else if (a.t === 'text-move') {
+        const dx = (e.clientX - a.sx) / opt.vp.scale;
+        const dy = (e.clientY - a.sy) / opt.vp.scale;
+        if (!a.moved && Math.abs(e.clientX - a.sx) + Math.abs(e.clientY - a.sy) > 3) a.moved = true;
+        setDragging(a.id);
+        opt.onMoveText?.(a.id, a.ox + dx, a.oy + dy);
       } else if (a.t === 'frame-move') {
         const dx = (e.clientX - a.sx) / opt.vp.scale;
         const dy = (e.clientY - a.sy) / opt.vp.scale;
@@ -141,6 +154,9 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
         if (a.kind === 'frame' && opt.onCreateFrame) {
           const id = opt.onCreateFrame(w.x - 150, w.y - 95);
           if (id) setSel({ kind: 'frame', id });
+        } else if (a.kind === 'text' && opt.onCreateText) {
+          const id = opt.onCreateText(w.x - 28, w.y - 15);
+          if (id) setSel({ kind: 'text', id });
         } else if (opt.onCreateNode) {
           const id = opt.onCreateNode(a.kind, w.x - 85, w.y - 30);
           if (id) setSel({ kind: 'node', id });
@@ -191,6 +207,14 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
     act.current = { t: 'move', id, sx: e.clientX, sy: e.clientY, ox: r?.x ?? 0, oy: r?.y ?? 0, moved: false };
   }, [vp, spacePan, o.tool]); // eslint-disable-line
 
+  const textDown = useCallback((id: string, e: RPointerEvent) => {
+    e.stopPropagation();
+    if (isPan()) { vp.beginPan(e); return; }
+    setSel({ kind: 'text', id });
+    const r = ref.current.textRectOf?.(id);
+    act.current = { t: 'text-move', id, sx: e.clientX, sy: e.clientY, ox: r?.x ?? 0, oy: r?.y ?? 0, moved: false };
+  }, [vp, spacePan, o.tool]); // eslint-disable-line
+
   const portDown = useCallback((id: string, e: RPointerEvent) => {
     e.stopPropagation();
     if (isPan()) { vp.beginPan(e); return; }
@@ -228,5 +252,5 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
     setPalette({ kind, cx: e.clientX, cy: e.clientY });
   }, []);
 
-  return { sel, setSel, hover, setHover, spacePan, dragging, link, palette, nodeDown, portDown, frameDown, frameResizeDown, bgDown, startPaletteDrag };
+  return { sel, setSel, hover, setHover, spacePan, dragging, link, palette, nodeDown, textDown, portDown, frameDown, frameResizeDown, bgDown, startPaletteDrag };
 }

@@ -1,5 +1,5 @@
 import type { DiagramModel } from '@plynth/shared';
-import type { Frame } from '../engine';
+import type { Frame, TextStyleId } from '../engine';
 import { clamp } from '../engine';
 
 export type Card = 'one' | 'zone' | 'many' | 'zmany';
@@ -33,16 +33,27 @@ export interface ErdRel {
   label?: string;
 }
 
+/** A free-floating styled text annotation. `styleId` references one of the
+ *  project's shared text styles; only the id is stored (see `engine/textstyles`). */
+export interface TextNode {
+  id: string | number;
+  x: number;
+  y: number;
+  content: string;
+  styleId: TextStyleId;
+}
+
 export interface ErdModel {
   type: 'erd';
   entities: ErdEntity[];
   rels: ErdRel[];
+  texts: TextNode[];
   frames: Frame[];
 }
 
 export function asErd(m: DiagramModel): ErdModel {
   const a = m as Partial<ErdModel>;
-  return { type: 'erd', entities: a.entities ?? [], rels: a.rels ?? [], frames: a.frames ?? [] };
+  return { type: 'erd', entities: a.entities ?? [], rels: a.rels ?? [], texts: a.texts ?? [], frames: a.frames ?? [] };
 }
 
 const HEADER_H = 34;
@@ -89,5 +100,5 @@ export function colToText(c: ErdCol): string {
 }
 
 export function maxId(m: ErdModel): number {
-  return Math.max(100, ...m.entities.map((e) => e.id));
+  return Math.max(100, ...m.entities.map((e) => e.id), ...m.texts.map((t) => Number(t.id)));
 }
