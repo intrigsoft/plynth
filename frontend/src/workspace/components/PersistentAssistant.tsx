@@ -2,6 +2,14 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/session';
+import { editorBridge } from '../../editors/editor-bridge';
+import type { ExportFormat } from '../../editors/engine';
+import {
+  diffErdChanges,
+  erdApplyChangesSchema,
+  summarizeErdChanges,
+  type ErdChange,
+} from '../../editors/erd/ai-ops';
 
 /**
  * The single, application-wide DioscHub assistant.
@@ -73,6 +81,94 @@ function whenDioscReady(isCancelled: () => boolean, cb: (diosc: DioscFn) => void
 const MUTATING_TOOL = /(?:^|[_.])(create|update|delete|add|remove)(?:[_.]|$)/i;
 
 /**
+ * The browser-adapter intent the assistant uses to edit the diagram on screen.
+ *
+ * One batched, declarative "diff" tool (`browser_apply_changes`) rather than
+ * micro-ops: the LLM reasons through the whole change set and sends an ordered
+ * list of typed edits, which the live editor validates + applies atomically.
+ * Gated by a client-side approval card (Responsibility-First) so the user
+ * reviews the structured diff before the AI touches their diagram. The intent
+ * is only advertised while an ERD editor is open (see the adapter's `intents`
+ * getter), so the LLM never sees a tool that can't apply to the current page.
+ */
+const ERD_APPLY_CHANGES_INTENT = {
+  name: 'apply_changes',
+  description:
+    'Apply a batch of edits to the ERD diagram currently open on screen. Send an ordered list of changes (add/rename/remove tables, add/remove columns, add/remove relationships); tables are referenced by name. The whole batch is validated and applied atomically, and shown to the user for approval first. Call browser_read_page to see the current tables before editing.',
+  schema: erdApplyChangesSchema,
+  approval: {
+    severity: 'medium' as const,
+    summary: (args: { changes?: ErdChange[] }) => summarizeErdChanges(args?.changes ?? []),
+    diff: (args: { changes?: ErdChange[] }) => diffErdChanges(args?.changes ?? []),
+  },
+  handler: async (args: { changes?: ErdChange[] }) => {
+    const handle = editorBridge.get();
+    if (handle?.type !== 'erd') {
+      return { success: false, error: 'No ERD diagram is open. Ask the user to open an ERD document, then retry.' };
+    }
+    return handle.applyChanges(args?.changes ?? []);
+  },
+};
+
+/**
+ * Export the open diagram as a downloadable file delivered into the chat.
+ *
+ * Read-only — it renders the current diagram, mutates nothing — so there's no
+ * approval card. The handler returns the bytes on `file`; the kit uploads them
+ * through the authenticated transport and replaces them with a byte-free fileId
+ * reference (generate_file-shaped) before the result reaches the LLM, which then
+ * renders the standard download chip. Credential-blind holds: the model sees a
+ * fileId reference, never the image bytes.
+ */
+const EXPORT_DIAGRAM_INTENT = {
+  name: 'export_diagram',
+  description:
+    'Export the ERD diagram currently open on screen as a downloadable file and deliver it into the chat as a download chip. Formats: "png" (default), "jpg", "svg", "xml". Use this when the user asks to download, save, or get an image/picture/file of the diagram.',
+  schema: {
+    type: 'object',
+    properties: {
+      format: {
+        type: 'string',
+        enum: ['png', 'jpg', 'svg', 'xml'],
+        description: 'Output format. Defaults to png.',
+      },
+    },
+  },
+  handler: async (args: { format?: ExportFormat }) => {
+    const handle = editorBridge.get();
+    if (handle?.type !== 'erd' || !handle.exportImage) {
+      return { success: false, error: 'No ERD diagram is open. Ask the user to open an ERD document, then retry.' };
+    }
+    const fmt: ExportFormat = args?.format ?? 'png';
+    try {
+      const file = await handle.exportImage(fmt);
+      // `file` is intercepted + stripped by the kit; the LLM gets `data` only.
+      return { success: true, data: { format: fmt, filename: file.filename }, file };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : 'Export failed' };
+    }
+  },
+};
+
+/**
+ * The host's "browser MCP server": a snapshot reader plus the diagram-editing
+ * intents for whatever editor is open. Registered once; `read()` and `intents`
+ * consult the editor bridge live, so the assistant always sees the current page.
+ */
+const diagramAdapter = {
+  read: async () => {
+    const base = { url: window.location.pathname + window.location.search, title: document.title };
+    const handle = editorBridge.get();
+    if (!handle) return { ...base, description: 'No diagram editor is open.' };
+    const data = handle.read();
+    return { ...base, description: `Open ${data.type} diagram "${data.docName}".`, data };
+  },
+  get intents() {
+    return editorBridge.get()?.type === 'erd' ? [ERD_APPLY_CHANGES_INTENT, EXPORT_DIAGRAM_INTENT] : [];
+  },
+};
+
+/**
  * Provides the assistant open/close state to every screen and renders the one
  * persistent panel as a sibling of the routed content. The panel is only
  * rendered while authenticated; once mounted it is never torn down on
@@ -83,7 +179,13 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(true);
 
-  useEffect(() => { ensureLoader(); }, []);
+  // Inject the embed loader only once authenticated — i.e. once `AssistantPanel`
+  // (also gated on `session`) is committing our own <diosc-chat>. Injecting it on
+  // the login page, before our element exists, makes the loader's "does the host
+  // already render a <diosc-chat>?" guard find nothing and auto-mount its own
+  // body-level FAB widget, leaving the app with two widgets. Effects run after
+  // commit, so by the time this fires our element is already in the DOM.
+  useEffect(() => { if (session) ensureLoader(); }, [session]);
 
   // Wire the kit's host hooks once the bundle is up (mirrors Cadence's
   // AssistantPanel). Two things:
@@ -106,10 +208,20 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       });
       cleanups.push(() => { try { diosc('tool', 'navigate', null); } catch { /* noop */ } });
 
+      // Declare the host as a "browser MCP server": the assistant can read the
+      // open diagram and edit it via the `browser_apply_changes` intent.
+      diosc('browserAdapter', diagramAdapter);
+      cleanups.push(() => { try { diosc('browserAdapter', null); } catch { /* noop */ } });
+
       const unsub = diosc('on', 'tool:completed', (data: unknown) => {
         const d = data as { success?: boolean; toolName?: string };
         if (d?.success === false) return;
-        if (MUTATING_TOOL.test(String(d?.toolName ?? ''))) {
+        const name = String(d?.toolName ?? '');
+        // Host-executed browser tools (browser_*) mutate the LIVE editor directly,
+        // so a workspace refetch would clobber unsaved local state — skip them.
+        // Only server-side (MCP) mutations need the UI to re-fetch.
+        if (name.startsWith('browser_')) return;
+        if (MUTATING_TOOL.test(name)) {
           window.dispatchEvent(new Event('plynth:refresh'));
         }
       });

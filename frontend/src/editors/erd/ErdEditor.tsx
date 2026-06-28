@@ -32,13 +32,14 @@ import {
   type Tool,
 } from '../engine';
 import type { EditorProps } from '../types';
+import { editorBridge } from '../editor-bridge';
+import { applyErdChanges, erdReadSnapshot, type ErdChange } from './ai-ops';
 import {
   asErd,
   CARDS,
   CARD_LABEL,
   colToText,
   maxId,
-  measureEntity,
   parseCol,
   type Card,
   type ErdEntity,
@@ -47,7 +48,7 @@ import {
   type TextNode as ErdText,
 } from './model';
 import { CrowDefs, cardMarker } from './markers';
-import { runErdExport } from './export';
+import { buildErdGeom, renderErdExport, runErdExport } from './export';
 
 const ACCENT = '#a21caf';
 const cardOptions = CARDS.map((c) => ({ value: c, label: CARD_LABEL[c] }));
@@ -67,20 +68,42 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
   const idc = useRef(maxId(erd));
 
   const patch = useCallback((next: Partial<ErdModel>) => onModel({ ...erd, ...next } as DiagramModel), [erd, onModel]);
+
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
+   * registers a handle the root-level adapter calls; a `latest` ref keeps the
+   * handle reading the current model without re-registering on every keystroke. */
+  const aiLatest = useRef({ erd, onModel, docName });
+  aiLatest.current = { erd, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'erd',
+        read: () => erdReadSnapshot(aiLatest.current.erd, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyErdChanges(aiLatest.current.erd, changes as ErdChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent. Recomputes
+        // geometry from the live model (same `buildErdGeom` the render `useMemo`
+        // uses), so the exported image matches what's on screen without reading
+        // any component-local ref.
+        exportImage: (fmt) =>
+          renderErdExport(fmt, aiLatest.current.erd, buildErdGeom(aiLatest.current.erd), aiLatest.current.docName),
+      }),
+    [],
+  );
   const setEntities = (fn: (e: ErdEntity[]) => ErdEntity[]) => patch({ entities: fn(erd.entities) });
   const setRels = (fn: (r: ErdRel[]) => ErdRel[]) => patch({ rels: fn(erd.rels) });
   const setTexts = (fn: (t: ErdText[]) => ErdText[]) => patch({ texts: fn(erd.texts) });
   const setFrames = (fn: (f: Frame[]) => Frame[]) => patch({ frames: fn(erd.frames) });
 
-  /* geometry */
-  const geom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const e of erd.entities) {
-      const sz = measureEntity(e, false);
-      m.set(String(e.id), { x: e.x, y: e.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [erd.entities]);
+  /* geometry — shared with the headless export path (see buildErdGeom). */
+  const geom = useMemo(() => buildErdGeom(erd), [erd.entities]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
   const textGeom = useMemo(() => {
     const m = new Map<string, Rect>();
@@ -163,8 +186,14 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
       if (!sel) return;
       if (sel.kind === 'node') {
         const nid = Number(sel.id);
-        setEntities((es) => es.filter((e) => e.id !== nid));
-        setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid));
+        // Atomic: drop the node AND its connectors in ONE patch. Two separate
+        // setEntities/setRels calls each spread the same stale `erd`, so the
+        // second (rels) clobbers the first (entities) — the node survives and
+        // only the connector goes. Single patch updates both arrays together.
+        patch({
+          entities: erd.entities.filter((e) => e.id !== nid),
+          rels: erd.rels.filter((r) => r.from !== nid && r.to !== nid),
+        });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
       else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
@@ -262,7 +291,7 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
   const selFrame = sel?.kind === 'frame' ? erd.frames.find((f) => f.id === sel.id) : undefined;
   const selText = sel?.kind === 'text' ? erd.texts.find((t) => String(t.id) === sel.id) : undefined;
   const selNode = sel?.kind === 'node' ? erd.entities.find((e) => String(e.id) === sel.id) : undefined;
-  const deleteNode = (id: number) => { setEntities((es) => es.filter((x) => x.id !== id)); setRels((rs) => rs.filter((r) => r.from !== id && r.to !== id)); bc.setSel(null); };
+  const deleteNode = (id: number) => { patch({ entities: erd.entities.filter((x) => x.id !== id), rels: erd.rels.filter((r) => r.from !== id && r.to !== id) }); bc.setSel(null); };
   const setCard = (end: 'from' | 'to', c: Card) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, [end === 'from' ? 'fromCard' : 'toCard']: c } : r)));
   const toggleIdent = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, identifying: !r.identifying } : r)));
   const reverseRel = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, from: r.to, to: r.from, fromCard: r.toCard, toCard: r.fromCard } : r)));
