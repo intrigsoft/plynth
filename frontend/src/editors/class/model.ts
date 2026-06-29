@@ -1,6 +1,6 @@
 import type { DiagramModel } from '@plynth/shared';
-import type { Frame } from '../engine';
-import { clamp } from '../engine';
+import type { Frame, TextStyleId, DocHeader, Annotation } from '../engine';
+import { clamp, DEFAULT_DOC_HEADER } from '../engine';
 
 export type Stereotype = null | 'interface' | 'abstract';
 
@@ -34,16 +34,29 @@ export interface ClassRel {
   label?: string;
 }
 
+/** A free-floating styled text annotation. `styleId` references one of the
+ *  project's shared text styles; only the id is stored (see `engine/textstyles`). */
+export interface TextNode {
+  id: string | number;
+  x: number;
+  y: number;
+  content: string;
+  styleId: TextStyleId;
+}
+
 export interface ClassModel {
   type: 'class';
   classes: ClassNode[];
   rels: ClassRel[];
+  texts: TextNode[];
   frames: Frame[];
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 export function asClass(m: DiagramModel): ClassModel {
   const a = m as Partial<ClassModel>;
-  return { type: 'class', classes: a.classes ?? [], rels: a.rels ?? [], frames: a.frames ?? [] };
+  return { type: 'class', classes: a.classes ?? [], rels: a.rels ?? [], texts: a.texts ?? [], frames: a.frames ?? [], annotations: a.annotations ?? [], header: a.header ?? { ...DEFAULT_DOC_HEADER } };
 }
 
 /* ---- relationship metadata ----------------------------------------------- */
@@ -101,5 +114,6 @@ export function measureClass(c: ClassNode, selected: boolean): { w: number; h: n
 }
 
 export function maxClassId(m: ClassModel): number {
-  return Math.max(100, ...m.classes.map((c) => c.id));
+  const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
+  return Math.max(100, ...m.classes.map((c) => c.id), ...m.texts.map((t) => Number(t.id)), ...annIds);
 }

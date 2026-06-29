@@ -1,5 +1,6 @@
 import type { DiagramModel } from '@plynth/shared';
-import type { Frame, TextStyleId } from '../engine';
+import type { Frame, TextStyleId, DocHeader, Annotation } from '../engine';
+import { DEFAULT_DOC_HEADER } from '../engine';
 
 /* UML deployment topology: hardware/runtime "nodes" (3D boxes, cylinders,
  * clouds) plus deployable "artifacts", linked by communication / dependency /
@@ -44,6 +45,8 @@ export interface DeploymentModel {
   rels: DeploymentRel[];
   texts: TextNode[];
   frames: Frame[];
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 /** Isometric depth of the 3D node box (top + right face offset). */
@@ -51,7 +54,7 @@ export const DEPTH = 12;
 
 export function asDeployment(m: DiagramModel): DeploymentModel {
   const a = m as Partial<DeploymentModel>;
-  return { type: 'deployment', nodes: a.nodes ?? [], rels: a.rels ?? [], texts: a.texts ?? [], frames: a.frames ?? [] };
+  return { type: 'deployment', nodes: a.nodes ?? [], rels: a.rels ?? [], texts: a.texts ?? [], frames: a.frames ?? [], annotations: a.annotations ?? [], header: a.header ?? { ...DEFAULT_DOC_HEADER } };
 }
 
 /** Shape classification used by both render + export. */
@@ -88,5 +91,6 @@ export function measureNode(n: DeploymentNode, selected: boolean): { w: number; 
 }
 
 export function maxId(m: DeploymentModel): number {
-  return Math.max(100, ...m.nodes.map((n) => n.id), ...m.texts.map((t) => Number(t.id)));
+  const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
+  return Math.max(100, ...m.nodes.map((n) => n.id), ...m.texts.map((t) => Number(t.id)), ...annIds);
 }

@@ -1,6 +1,11 @@
 import type { DiagramModel } from '@plynth/shared';
-import type { Frame, TextStyleId } from '../engine';
-import { clamp } from '../engine';
+import type { Frame, TextStyleId, DocHeader, Annotation } from '../engine';
+import { clamp, DEFAULT_DOC_HEADER } from '../engine';
+
+// The document-header model (discrete position + metadata; title/description are
+// read live from the doc) is shared by every editor — see engine/doc-header.
+export { DEFAULT_DOC_HEADER };
+export type { DocHeader };
 
 export type Card = 'one' | 'zone' | 'many' | 'zmany';
 export const CARD_LABEL: Record<Card, string> = { one: '1', zone: '0..1', many: '1..*', zmany: '0..*' };
@@ -49,11 +54,23 @@ export interface ErdModel {
   rels: ErdRel[];
   texts: TextNode[];
   frames: Frame[];
+  /** Anchored callout notes — pinned to an entity / relationship / frame, never
+   *  free coordinates (see engine/annotations). */
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 export function asErd(m: DiagramModel): ErdModel {
   const a = m as Partial<ErdModel>;
-  return { type: 'erd', entities: a.entities ?? [], rels: a.rels ?? [], texts: a.texts ?? [], frames: a.frames ?? [] };
+  return {
+    type: 'erd',
+    entities: a.entities ?? [],
+    rels: a.rels ?? [],
+    texts: a.texts ?? [],
+    frames: a.frames ?? [],
+    annotations: a.annotations ?? [],
+    header: a.header ?? { ...DEFAULT_DOC_HEADER },
+  };
 }
 
 const HEADER_H = 34;
@@ -100,5 +117,8 @@ export function colToText(c: ErdCol): string {
 }
 
 export function maxId(m: ErdModel): number {
-  return Math.max(100, ...m.entities.map((e) => e.id), ...m.texts.map((t) => Number(t.id)));
+  // Annotation ids ("a103") share the same counter, so fold their numeric suffix
+  // in — otherwise a reload restarts at 100 and re-mints an existing note's id.
+  const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
+  return Math.max(100, ...m.entities.map((e) => e.id), ...m.texts.map((t) => Number(t.id)), ...annIds);
 }

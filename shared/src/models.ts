@@ -22,19 +22,19 @@ export type DiagramModel = { type: DiagramType } & Record<string, unknown>;
 export function emptyModel(type: DiagramType): DiagramModel {
   switch (type) {
     case 'class':
-      return { type, classes: [], rels: [], frames: [] };
+      return { type, classes: [], rels: [], texts: [], frames: [], annotations: [] };
     case 'erd':
-      return { type, entities: [], rels: [], texts: [], frames: [] };
+      return { type, entities: [], rels: [], texts: [], frames: [], annotations: [] };
     case 'deployment':
-      return { type, nodes: [], rels: [], texts: [], frames: [] };
+      return { type, nodes: [], rels: [], texts: [], frames: [], annotations: [] };
     case 'component':
-      return { type, components: [], rels: [], texts: [], frames: [] };
+      return { type, components: [], rels: [], texts: [], frames: [], annotations: [] };
     case 'sequence':
-      return { type, lifelines: [], messages: [], activations: [], frames: [] };
+      return { type, lifelines: [], messages: [], activations: [], texts: [], frames: [], annotations: [] };
     case 'flowchart':
-      return { type, nodes: [], rels: [], texts: [], pool: null };
+      return { type, nodes: [], rels: [], texts: [], pool: null, annotations: [] };
     case 'usecase':
-      return { type, nodes: [], rels: [], texts: [], system: null };
+      return { type, nodes: [], rels: [], texts: [], system: null, annotations: [] };
   }
 }
 

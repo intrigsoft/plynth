@@ -29,6 +29,7 @@ import {
   type Rect,
   type Tool,
 } from '../engine';
+import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
 import {
   asUseCase,
@@ -57,7 +58,7 @@ const SYS_MIN_H = 140;
 const kindOptions = KORDER.map((k) => ({ value: k, label: KIND_LABEL[k] }));
 const relOptions = RORDER.map((t) => ({ value: t, label: rtypeOf(t).title }));
 
-export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProps) {
+export function UseCaseEditor({ model, onModel, docName, description, exportApi }: EditorProps) {
   const uc = useMemo(() => asUseCase(model), [model]);
   const vp = useViewport();
   const [tool, setTool] = useState<Tool>('select');
@@ -144,14 +145,45 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
       if (!sel) return;
       if (sel.kind === 'node') {
         const nid = Number(sel.id);
-        setNodes((ns) => ns.filter((n) => n.id !== nid));
-        setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid));
+        // Atomic: drop the node AND its connectors in ONE patch — two separate
+        // setNodes/setRels calls each spread the same stale `uc`, so the second
+        // clobbers the first and the node survives (only the edge goes).
+        patch({
+          nodes: uc.nodes.filter((n) => n.id !== nid),
+          rels: uc.rels.filter((r) => r.from !== nid && r.to !== nid),
+        });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
       else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
     },
     editing: !!edit || sysEdit || !!textEdit || !!relEdit,
   });
   const { sel } = bc;
+
+  /* document header (shared engine surface; bounds = nodes + texts + system boundary) */
+  const contentBounds = useMemo(() => {
+    const rects = [...geom.values(), ...textGeom.values()];
+    if (uc.system?.on) rects.push({ x: uc.system.x, y: uc.system.y, w: uc.system.w, h: uc.system.h });
+    return unionBounds(rects);
+  }, [geom, textGeom, uc.system]);
+  const header = useDocHeader({ docName, description, header: uc.header, contentBounds, canvasSel: sel });
+  const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: uc.header?.metadata ?? [] } });
+
+  /* anchored annotations — shared engine layer (see ERD for the reference wiring) */
+  const annRef = useCallback((target: string): AnnRef | null => {
+    const rel = uc.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), b = geom.get(String(rel.to)); if (a && b) return { x: (a.x + a.w / 2 + b.x + b.w / 2) / 2, y: (a.y + a.h / 2 + b.y + b.h / 2) / 2, w: 0, h: 0, point: true }; }
+    const n = uc.nodes.find((x) => String(x.id) === target);
+    if (n) { const g = geom.get(String(n.id)); if (g) return { x: n.x, y: n.y, w: g.w, h: g.h }; }
+    return null;
+  }, [uc.rels, uc.nodes, geom]);
+  const annObstacles = useMemo(() => [...geom.values()], [geom]);
+  const ann = useAnnotations({
+    annotations: uc.annotations,
+    setAnnotations: (fn) => patch({ annotations: fn(uc.annotations) }),
+    annRef, obstacles: annObstacles, accent: ACCENT, panMode: tool === 'pan',
+    toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
+    onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); setSelSys(false); header.setSelected(false); },
+  });
 
   /* selecting a node/edge clears the system selection */
   useEffect(() => { if (sel) setSelSys(false); }, [sel]);
@@ -384,6 +416,27 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
     );
   });
 
+  /* connector note handles (drag out → a note on the relationship) */
+  const connHandles = uc.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    if (!((selected || hov) && relEdit?.id !== r.id && !bc.palette)) return null;
+    const ca = { x: a.x + a.w / 2, y: a.y + a.h / 2 }, cb = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+    const mid = { x: (ca.x + cb.x) / 2, y: (ca.y + cb.y) / 2 };
+    const dx = cb.x - ca.x, dy = cb.y - ca.y, len = Math.hypot(dx, dy) || 1;
+    const px = -dy / len, py = dx / len;
+    return (
+      <div key={r.id} data-testid={'usecase-conn-note-handle-' + r.id} title="Drag out to add a note"
+        onPointerDown={(ev) => ann.createFromTarget(r.id, ev)}
+        style={annHandleStyle(ACCENT, { left: 0, top: 0, transform: `translate(${(mid.x + px * -15).toFixed(1)}px,${(mid.y + py * -15).toFixed(1)}px) translate(-50%,-50%)`, zIndex: 6 })}>
+        <NoteIcon />
+      </div>
+    );
+  });
+
   /* ---- render: node ---- */
   const renderNode = (n: UseCaseNode) => {
     const g = geom.get(String(n.id))!;
@@ -415,7 +468,7 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
       : { font: "600 13px var(--ui)", color: '#10141b', lineHeight: 1.2, maxHeight: '100%', overflow: 'hidden', textOverflow: 'ellipsis', pointerEvents: 'auto' };
     return (
       <div key={n.id} style={{ position: 'absolute', transform: `translate(${n.x}px,${n.y}px)`, width: g.w, height: g.h, userSelect: 'none', cursor: tool === 'pan' ? 'grab' : 'move', zIndex: selected ? 5 : hov ? 4 : 2 }}
-        onPointerDown={(ev) => bc.nodeDown(String(n.id), ev)}
+        onPointerDown={(ev) => { if ((ev.ctrlKey || ev.metaKey) && tool !== 'pan') { ann.createFromTarget(String(n.id), ev); return; } bc.nodeDown(String(n.id), ev); }}
         onPointerEnter={() => bc.setHover('node:' + String(n.id))} onPointerLeave={() => bc.setHover(null)}
         onDoubleClick={(ev) => { ev.stopPropagation(); beginEdit(n.id); }}>
         <svg style={{ position: 'absolute', left: 0, top: 0, width: g.w, height: g.h, overflow: 'visible', pointerEvents: 'none', filter: selected ? 'drop-shadow(0 3px 10px rgba(16,20,27,.16))' : 'drop-shadow(0 2px 6px rgba(16,20,27,.12))' }}>
@@ -433,6 +486,13 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
         {showPorts && ports.map((p) => (
           <div key={p.key} onPointerDown={(ev) => bc.portDown(String(n.id), ev)} style={portStyle(p.pos)} />
         ))}
+        {showPorts && (
+          <div data-testid={'usecase-note-handle-' + n.id} title="Drag out to add a note"
+            onPointerDown={(ev) => ann.createFromTarget(String(n.id), ev)}
+            style={annHandleStyle(ACCENT, { right: -9, bottom: -9 })}>
+            <NoteIcon />
+          </div>
+        )}
       </div>
     );
   };
@@ -466,7 +526,7 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
       <SelectionPill x={(g.x + g.w / 2) * vp.scale + vp.tx} y={g.y * vp.scale + vp.ty - 14} transform="translate(-50%,-100%)">
         <PillSelect accent={ACCENT} value={selNode.kind} options={kindOptions} onChange={(v) => setKind(selNode.id, v as UseCaseKind)} testId="usecase-element-type" />
         <PillDivider />
-        <PillDelete label="" onClick={() => { const nid = selNode.id; setNodes((ns) => ns.filter((x) => x.id !== nid)); setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid)); bc.setSel(null); }} title="Delete (Del)" testId="usecase-node-delete" />
+        <PillDelete label="" onClick={() => { const nid = selNode.id; patch({ nodes: uc.nodes.filter((x) => x.id !== nid), rels: uc.rels.filter((r) => r.from !== nid && r.to !== nid) }); bc.setSel(null); }} title="Delete (Del)" testId="usecase-node-delete" />
       </SelectionPill>
     );
   }
@@ -542,10 +602,17 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
       onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (sysEdit) commitSysRename(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); setSelSys(false); bc.bgDown(e); }}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (sysEdit) commitSysRename(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); ann.clear(); setSelSys(false); header.setSelected(false); bc.bgDown(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
       world={
         <>
+          {header.show && (
+            <DocHeaderBlock
+              state={header} accent={ACCENT} panMode={tool === 'pan'}
+              onSelect={() => { bc.setSel(null); setSelSys(false); header.setSelected(true); }}
+              onPanStart={bc.bgDown} testId="usecase-doc-header"
+            />
+          )}
           {/* system boundary (behind nodes) */}
           {sys?.on && (
             <>
@@ -571,8 +638,10 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
           {relLabels}
+          {connHandles}
           {uc.nodes.map(renderNode)}
           {uc.texts.map(renderText)}
+          {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
             const p1 = ellipseEdge(a, bc.link.pos.x, bc.link.pos.y);
@@ -582,6 +651,9 @@ export function UseCaseEditor({ model, onModel, docName, exportApi }: EditorProp
       }
       hud={
         <>
+          {header.selected && header.show && (
+            <DocHeaderPicker state={header} vp={vp} accent={ACCENT} onPick={setHeaderPos} testId="usecase-header-toolbar" />
+          )}
           {kindPill}
           {relPill}
           {sysPill}

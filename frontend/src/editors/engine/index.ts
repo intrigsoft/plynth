@@ -4,6 +4,8 @@ export * from './text-node';
 export * from './style-picker';
 export * from './editable-label';
 export * from './frames';
+export * from './doc-header';
+export * from './annotations';
 export * from './export';
 export * from './elk';
 export * from './useViewport';

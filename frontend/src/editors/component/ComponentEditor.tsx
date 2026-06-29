@@ -33,6 +33,7 @@ import {
   type Tool,
 } from '../engine';
 import { FRAME_ORDER, FRAME_TYPES } from '../engine';
+import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
 import {
   asComponent,
@@ -60,7 +61,7 @@ const relTypeOptions = REL_TYPES.map((t) => ({ value: t, label: REL_TITLE[t] }))
 const kindOptions = KORDER.map((k) => ({ value: k, label: KINDS[k].label }));
 const frameTypeOptions = FRAME_ORDER.map((t) => ({ value: t, label: FRAME_TYPES[t].label }));
 
-export function ComponentEditor({ model, onModel, docName, exportApi }: EditorProps) {
+export function ComponentEditor({ model, onModel, docName, description, exportApi }: EditorProps) {
   const cm = useMemo(() => asComponent(model), [model]);
   const vp = useViewport();
   const [tool, setTool] = useState<Tool>('select');
@@ -173,8 +174,13 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
       if (!sel) return;
       if (sel.kind === 'node') {
         const nid = Number(sel.id);
-        setComps((cs) => cs.filter((c) => c.id !== nid));
-        setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid));
+        // Atomic: drop the node AND its connectors in ONE patch — two separate
+        // setComps/setRels calls each spread the same stale `cm`, so the second
+        // clobbers the first and the node survives (only the edge goes).
+        patch({
+          components: cm.components.filter((c) => c.id !== nid),
+          rels: cm.rels.filter((r) => r.from !== nid && r.to !== nid),
+        });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
       else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
@@ -182,6 +188,33 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
     editing: !!edit || !!textEdit || !!relEdit,
   });
   const { sel } = bc;
+
+  /* document header (shared engine surface; bounds = union of node/frame/text rects) */
+  const contentBounds = useMemo(
+    () => unionBounds([...geom.values(), ...cm.frames, ...textGeom.values()]),
+    [geom, cm.frames, textGeom],
+  );
+  const header = useDocHeader({ docName, description, header: cm.header, contentBounds, canvasSel: sel });
+  const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: cm.header?.metadata ?? [] } });
+
+  /* anchored annotations — shared engine layer (see ERD for the reference wiring) */
+  const annRef = useCallback((target: string): AnnRef | null => {
+    const rel = cm.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), b = geom.get(String(rel.to)); if (a && b) { const ca = center(a), cb = center(b); const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y); return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, w: 0, h: 0, point: true }; } }
+    const fr = cm.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const c = cm.components.find((x) => String(x.id) === target);
+    if (c) { const g = geom.get(String(c.id)); if (g) return { x: c.x, y: c.y, w: g.w, h: g.h }; }
+    return null;
+  }, [cm.rels, cm.frames, cm.components, geom]);
+  const annObstacles = useMemo(() => [...geom.values()], [geom]);
+  const ann = useAnnotations({
+    annotations: cm.annotations,
+    setAnnotations: (fn) => patch({ annotations: fn(cm.annotations) }),
+    annRef, obstacles: annObstacles, accent: ACCENT, panMode: tool === 'pan',
+    toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
+    onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); header.setSelected(false); },
+  });
 
   /* fit on first mount */
   const fitAll = useCallback(() => {
@@ -324,6 +357,27 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
     );
   });
 
+  /* connector note handles (drag out → a note on the relationship) */
+  const connHandles = cm.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    if (!((selected || hov) && relEdit?.id !== r.id && !bc.palette)) return null;
+    const ca = center(a), cb = center(b);
+    const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y);
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const pp = perp(p1, p2);
+    return (
+      <div key={r.id} data-testid={'component-conn-note-handle-' + r.id} title="Drag out to add a note"
+        onPointerDown={(ev) => ann.createFromTarget(r.id, ev)}
+        style={annHandleStyle(ACCENT, { left: 0, top: 0, transform: `translate(${(mid.x + pp.x * -15).toFixed(1)}px,${(mid.y + pp.y * -15).toFixed(1)}px) translate(-50%,-50%)`, zIndex: 6 })}>
+        <NoteIcon />
+      </div>
+    );
+  });
+
   /* ---- render component node ---- */
   const renderComp = (c: CompNode) => {
     const g = geom.get(String(c.id))!;
@@ -375,7 +429,7 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
 
     return (
       <div key={c.id} style={{ position: 'absolute', transform: `translate(${c.x}px,${c.y}px)`, width: m.w, height: isBox ? undefined : m.h, fontFamily: 'var(--mono)', userSelect: 'none', cursor: tool === 'pan' ? 'grab' : 'move', zIndex: selected ? 5 : hov ? 4 : 2 }}
-        onPointerDown={(ev) => bc.nodeDown(String(c.id), ev)}
+        onPointerDown={(ev) => { if ((ev.ctrlKey || ev.metaKey) && tool !== 'pan') { ann.createFromTarget(String(c.id), ev); return; } bc.nodeDown(String(c.id), ev); }}
         onPointerEnter={() => bc.setHover('node:' + String(c.id))} onPointerLeave={() => bc.setHover(null)}
         onDoubleClick={(ev) => ev.stopPropagation()}>
 
@@ -411,6 +465,13 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
           };
           return <div key={side} onPointerDown={(ev) => bc.portDown(String(c.id), ev)} style={{ position: 'absolute', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'crosshair', zIndex: 8, ...pos[side] }} />;
         })}
+        {showPorts && (
+          <div data-testid={'component-note-handle-' + c.id} title="Drag out to add a note"
+            onPointerDown={(ev) => ann.createFromTarget(String(c.id), ev)}
+            style={annHandleStyle(ACCENT, { right: -9, bottom: -9 })}>
+            <NoteIcon />
+          </div>
+        )}
       </div>
     );
   };
@@ -447,7 +508,7 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
       <SelectionPill x={(selComp.x + g.w / 2) * vp.scale + vp.tx} y={selComp.y * vp.scale + vp.ty - 14} transform="translate(-50%,-100%)">
         <PillSelect label="Type" accent={ACCENT} value={selComp.kind} options={kindOptions} onChange={(v) => setKind(selComp.id, v as CompKind)} testId="component-node-kind" />
         <PillDivider />
-        <PillDelete label="" onClick={() => { setComps((cs) => cs.filter((x) => x.id !== selComp.id)); setRels((rs) => rs.filter((r) => r.from !== selComp.id && r.to !== selComp.id)); bc.setSel(null); }} title="Delete (Del)" testId="component-node-delete" />
+        <PillDelete label="" onClick={() => { patch({ components: cm.components.filter((x) => x.id !== selComp.id), rels: cm.rels.filter((r) => r.from !== selComp.id && r.to !== selComp.id) }); bc.setSel(null); }} title="Delete (Del)" testId="component-node-delete" />
       </SelectionPill>
     );
   }
@@ -516,10 +577,17 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
       onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); bc.bgDown(e); }}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
       world={
         <>
+          {header.show && (
+            <DocHeaderBlock
+              state={header} accent={ACCENT} panMode={tool === 'pan'}
+              onSelect={() => { bc.setSel(null); header.setSelected(true); }}
+              onPanStart={bc.bgDown} testId="component-doc-header"
+            />
+          )}
           {framesSorted.map((f) => {
             const selected = sel?.kind === 'frame' && sel.id === f.id;
             const dashed = f.type === 'frame';
@@ -529,6 +597,13 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
                   <FrameGlyph type={f.type} color="#67748a" /> {f.label}
                 </div>
                 {selected && <div onPointerDown={(e) => bc.frameResizeDown(f.id, e)} style={{ position: 'absolute', right: -6, bottom: -6, width: 13, height: 13, borderRadius: 4, background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'nwse-resize' }} />}
+                {selected && (
+                  <div data-testid={'component-frame-note-handle-' + f.id} title="Drag out to add a note"
+                    onPointerDown={(e) => ann.createFromTarget(f.id, e)}
+                    style={annHandleStyle(ACCENT, { right: 22, bottom: -11 })}>
+                    <NoteIcon />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -537,8 +612,10 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
           {relLabels}
+          {connHandles}
           {cm.components.map(renderComp)}
           {cm.texts.map(renderText)}
+          {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
             const p1 = rectEdge(a, bc.link.pos.x, bc.link.pos.y);
@@ -548,6 +625,9 @@ export function ComponentEditor({ model, onModel, docName, exportApi }: EditorPr
       }
       hud={
         <>
+          {header.selected && header.show && (
+            <DocHeaderPicker state={header} vp={vp} accent={ACCENT} onPick={setHeaderPos} testId="component-header-toolbar" />
+          )}
           {kindPill}
           {relPill}
           {selText && (() => {

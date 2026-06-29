@@ -1,4 +1,6 @@
 import type { DiagramModel } from '@plynth/shared';
+import type { TextStyleId, DocHeader, Annotation } from '../engine';
+import { DEFAULT_DOC_HEADER } from '../engine';
 
 /* =============================================================================
  *  Sequence diagram model. BESPOKE editor — lifelines are positioned by x only,
@@ -53,12 +55,25 @@ export interface SeqFrame {
   sections: SeqSection[];
 }
 
+/** A free-floating styled text annotation. `styleId` references one of the
+ *  project's shared text styles; only the id is stored (see `engine/textstyles`). */
+export interface TextNode {
+  id: string | number;
+  x: number;
+  y: number;
+  content: string;
+  styleId: TextStyleId;
+}
+
 export interface SequenceModel {
   type: 'sequence';
   lifelines: SeqLifeline[];
   messages: SeqMessage[];
   activations: SeqActivation[];
+  texts: TextNode[];
   frames: SeqFrame[];
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 /* ---- layout constants (mirror the prototype) ----------------------------- */
@@ -77,7 +92,10 @@ export function asSequence(m: DiagramModel): SequenceModel {
     lifelines: a.lifelines ?? [],
     messages: a.messages ?? [],
     activations: a.activations ?? [],
+    texts: a.texts ?? [],
     frames: a.frames ?? [],
+    annotations: a.annotations ?? [],
+    header: a.header ?? { ...DEFAULT_DOC_HEADER },
   };
 }
 
@@ -109,6 +127,8 @@ export function maxId(m: SequenceModel): number {
     ...m.activations.map((x) => x.id),
     ...m.frames.map((x) => x.id),
     ...m.frames.flatMap((f) => f.sections.map((s) => s.id)),
+    ...m.texts.map((x) => String(x.id)),
+    ...(m.annotations ?? []).map((a) => String(a.id)),
   ];
   for (const id of sids) {
     const d = Number((id.match(/\d+/) ?? ['0'])[0]);

@@ -1,6 +1,6 @@
 import type { DiagramModel } from '@plynth/shared';
-import type { Frame, TextStyleId } from '../engine';
-import { clamp } from '../engine';
+import type { Frame, TextStyleId, DocHeader, Annotation } from '../engine';
+import { clamp, DEFAULT_DOC_HEADER } from '../engine';
 
 /* ---- kinds --------------------------------------------------------------- */
 
@@ -67,11 +67,13 @@ export interface ComponentModel {
   rels: CompRel[];
   texts: TextNode[];
   frames: Frame[];
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 export function asComponent(m: DiagramModel): ComponentModel {
   const a = m as Partial<ComponentModel>;
-  return { type: 'component', components: a.components ?? [], rels: a.rels ?? [], texts: a.texts ?? [], frames: a.frames ?? [] };
+  return { type: 'component', components: a.components ?? [], rels: a.rels ?? [], texts: a.texts ?? [], frames: a.frames ?? [], annotations: a.annotations ?? [], header: a.header ?? { ...DEFAULT_DOC_HEADER } };
 }
 
 export function kindOf(c: CompNode): KindSpec {
@@ -124,5 +126,6 @@ export function connMarkers(type: RelType): { dash?: string; ms?: string; me?: s
 }
 
 export function maxId(m: ComponentModel): number {
-  return Math.max(100, ...m.components.map((c) => c.id), ...m.texts.map((t) => Number(t.id)));
+  const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
+  return Math.max(100, ...m.components.map((c) => c.id), ...m.texts.map((t) => Number(t.id)), ...annIds);
 }

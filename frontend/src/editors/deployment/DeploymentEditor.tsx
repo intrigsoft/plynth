@@ -36,6 +36,7 @@ import {
   type Rect,
   type Tool,
 } from '../engine';
+import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
 import {
   asDeployment,
@@ -76,7 +77,7 @@ function specForKind(kind: string): Pick<DeploymentNode, 'kind' | 'stereotype' |
   }
 }
 
-export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorProps) {
+export function DeploymentEditor({ model, onModel, docName, description, exportApi }: EditorProps) {
   const dep = useMemo(() => asDeployment(model), [model]);
   const vp = useViewport();
   const [tool, setTool] = useState<Tool>('select');
@@ -189,8 +190,13 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
       if (!sel) return;
       if (sel.kind === 'node') {
         const nid = Number(sel.id);
-        setNodes((ns) => ns.filter((n) => n.id !== nid));
-        setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid));
+        // Atomic: drop the node AND its connectors in ONE patch — two separate
+        // setNodes/setRels calls each spread the same stale `dep`, so the second
+        // clobbers the first and the node survives (only the edge goes).
+        patch({
+          nodes: dep.nodes.filter((n) => n.id !== nid),
+          rels: dep.rels.filter((r) => r.from !== nid && r.to !== nid),
+        });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
       else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
@@ -198,6 +204,33 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     editing: !!edit || !!textEdit || !!relEdit,
   });
   const { sel } = bc;
+
+  /* document header (shared engine surface; bounds = union of node/frame/text rects) */
+  const contentBounds = useMemo(
+    () => unionBounds([...geom.values(), ...dep.frames, ...textGeom.values()]),
+    [geom, dep.frames, textGeom],
+  );
+  const header = useDocHeader({ docName, description, header: dep.header, contentBounds, canvasSel: sel });
+  const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: dep.header?.metadata ?? [] } });
+
+  /* anchored annotations — shared engine layer (see ERD for the reference wiring) */
+  const annRef = useCallback((target: string): AnnRef | null => {
+    const rel = dep.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), b = geom.get(String(rel.to)); if (a && b) { const ca = center(a), cb = center(b); const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y); return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, w: 0, h: 0, point: true }; } }
+    const fr = dep.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const n = dep.nodes.find((x) => String(x.id) === target);
+    if (n) { const g = geom.get(String(n.id)); if (g) return { x: n.x, y: n.y, w: g.w, h: g.h }; }
+    return null;
+  }, [dep.rels, dep.frames, dep.nodes, geom]);
+  const annObstacles = useMemo(() => [...geom.values()], [geom]);
+  const ann = useAnnotations({
+    annotations: dep.annotations,
+    setAnnotations: (fn) => patch({ annotations: fn(dep.annotations) }),
+    annRef, obstacles: annObstacles, accent: ACCENT, panMode: tool === 'pan',
+    toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
+    onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); header.setSelected(false); },
+  });
 
   /* fit on first mount */
   const fitAll = useCallback(() => {
@@ -295,7 +328,7 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
   const selFrame = sel?.kind === 'frame' ? dep.frames.find((f) => f.id === sel.id) : undefined;
   const selText = sel?.kind === 'text' ? dep.texts.find((t) => String(t.id) === sel.id) : undefined;
   const selNode = sel?.kind === 'node' ? dep.nodes.find((n) => String(n.id) === sel.id) : undefined;
-  const deleteNode = (id: number) => { setNodes((ns) => ns.filter((n) => n.id !== id)); setRels((rs) => rs.filter((r) => r.from !== id && r.to !== id)); bc.setSel(null); };
+  const deleteNode = (id: number) => { patch({ nodes: dep.nodes.filter((n) => n.id !== id), rels: dep.rels.filter((r) => r.from !== id && r.to !== id) }); bc.setSel(null); };
   const setRelType = (t: RelType) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, type: t } : r)));
   const reverseRel = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, from: r.to, to: r.from } : r)));
   const setFrameType = (t: FrameType) => setFrames((fs) => fs.map((f) => (f.id === selFrame!.id ? { ...f, type: t } : f)));
@@ -347,6 +380,27 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     );
   });
 
+  /* connector note handles (drag out → a note on the relationship) */
+  const connHandles = dep.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    if (!((selected || hov) && relEdit?.id !== r.id && !bc.palette)) return null;
+    const ca = center(a), cb = center(b);
+    const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y);
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const pp = perp(p1, p2);
+    return (
+      <div key={r.id} data-testid={'deployment-conn-note-handle-' + r.id} title="Drag out to add a note"
+        onPointerDown={(ev) => ann.createFromTarget(r.id, ev)}
+        style={annHandleStyle(ACCENT, { left: 0, top: 0, transform: `translate(${(mid.x + pp.x * -15).toFixed(1)}px,${(mid.y + pp.y * -15).toFixed(1)}px) translate(-50%,-50%)`, zIndex: 6 })}>
+        <NoteIcon />
+      </div>
+    );
+  });
+
   /* ---- render: a node box ---- */
   const renderNode = (n: DeploymentNode) => {
     const g = geom.get(String(n.id))!;
@@ -393,7 +447,7 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
 
     return (
       <div key={n.id} style={boxStyle}
-        onPointerDown={(ev) => bc.nodeDown(String(n.id), ev)}
+        onPointerDown={(ev) => { if ((ev.ctrlKey || ev.metaKey) && tool !== 'pan') { ann.createFromTarget(String(n.id), ev); return; } bc.nodeDown(String(n.id), ev); }}
         onPointerEnter={() => bc.setHover('node:' + String(n.id))} onPointerLeave={() => bc.setHover(null)}
         onDoubleClick={(ev) => ev.stopPropagation()}>
         {faces && (
@@ -424,6 +478,13 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
           <div key={side} onPointerDown={(ev) => bc.portDown(String(n.id), ev)}
             style={{ position: 'absolute', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'crosshair', zIndex: 8, ...ports[side] }} />
         ))}
+        {showPorts && (
+          <div data-testid={'deployment-note-handle-' + n.id} title="Drag out to add a note"
+            onPointerDown={(ev) => ann.createFromTarget(String(n.id), ev)}
+            style={annHandleStyle(ACCENT, { right: -9, bottom: -9 })}>
+            <NoteIcon />
+          </div>
+        )}
 
         <div style={headStyle}>
           {n.stereotype && <div style={{ fontSize: 10.5, fontWeight: 500, color: '#9a5b3f', textAlign: 'center', marginBottom: 1 }}>«{n.stereotype}»</div>}
@@ -516,6 +577,13 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
         {selected && (
           <div onPointerDown={(e) => bc.frameResizeDown(f.id, e)} style={{ position: 'absolute', right: -6, bottom: -6, width: 14, height: 14, borderRadius: 4, background: '#fff', border: `2px solid ${FRAME_BLUE}`, cursor: 'nwse-resize', zIndex: 9 }} />
         )}
+        {selected && (
+          <div data-testid={'deployment-frame-note-handle-' + f.id} title="Drag out to add a note"
+            onPointerDown={(e) => ann.createFromTarget(f.id, e)}
+            style={annHandleStyle(ACCENT, { right: 22, bottom: -11 })}>
+            <NoteIcon />
+          </div>
+        )}
       </div>
     );
   };
@@ -594,18 +662,27 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
       onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); bc.bgDown(e); }}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
       world={
         <>
+          {header.show && (
+            <DocHeaderBlock
+              state={header} accent={ACCENT} panMode={tool === 'pan'}
+              onSelect={() => { bc.setSel(null); header.setSelected(true); }}
+              onPanStart={bc.bgDown} testId="deployment-doc-header"
+            />
+          )}
           {framesSorted.map(renderFrame)}
           <svg style={{ position: 'absolute', left: 0, top: 0, width: 100, height: 100, overflow: 'visible', pointerEvents: 'none' }}>
             <DpArrowDefs />
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
           {relLabels}
+          {connHandles}
           {dep.nodes.map(renderNode)}
           {dep.texts.map(renderText)}
+          {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
             const p1 = rectEdge(a, bc.link.pos.x, bc.link.pos.y);
@@ -615,6 +692,9 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
       }
       hud={
         <>
+          {header.selected && header.show && (
+            <DocHeaderPicker state={header} vp={vp} accent={ACCENT} onPick={setHeaderPos} testId="deployment-header-toolbar" />
+          )}
           {relPill}
           {selNode && (() => {
             const g = geom.get(String(selNode.id))!;

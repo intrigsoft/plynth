@@ -1,6 +1,6 @@
 import type { DiagramModel } from '@plynth/shared';
-import { clamp } from '../engine';
-import type { TextStyleId } from '../engine';
+import { clamp, DEFAULT_DOC_HEADER } from '../engine';
+import type { TextStyleId, DocHeader, Annotation } from '../engine';
 
 /* ---- kinds -------------------------------------------------------------- */
 
@@ -94,11 +94,13 @@ export interface FlowchartModel {
   rels: FlowRel[];
   texts: TextNode[];
   pool: FlowPool | null;
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 export function asFlowchart(m: DiagramModel): FlowchartModel {
   const a = m as Partial<FlowchartModel>;
-  return { type: 'flowchart', nodes: a.nodes ?? [], rels: a.rels ?? [], texts: a.texts ?? [], pool: a.pool ?? null };
+  return { type: 'flowchart', nodes: a.nodes ?? [], rels: a.rels ?? [], texts: a.texts ?? [], pool: a.pool ?? null, annotations: a.annotations ?? [], header: a.header ?? { ...DEFAULT_DOC_HEADER } };
 }
 
 export function kindOf(n: FlowNode): KindMeta {
@@ -157,7 +159,8 @@ export function poolBounds(pool: FlowPool): { x: number; y: number; w: number; h
 }
 
 export function maxNodeId(m: FlowchartModel): number {
-  return Math.max(100, ...m.nodes.map((n) => n.id), ...m.texts.map((t) => Number(t.id)));
+  const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
+  return Math.max(100, ...m.nodes.map((n) => n.id), ...m.texts.map((t) => Number(t.id)), ...annIds);
 }
 
 /** Highest numeric suffix among existing lane ids (`l3` → 3), for unique ids. */

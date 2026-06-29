@@ -31,6 +31,7 @@ import {
   type Rect,
   type Tool,
 } from '../engine';
+import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
 import {
   asFlowchart,
@@ -61,7 +62,7 @@ type PoolDrag =
   | { t: 'pool-len'; sx: number; sy: number; olen: number }
   | null;
 
-export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorProps) {
+export function FlowchartEditor({ model, onModel, docName, description, exportApi }: EditorProps) {
   const fc = useMemo(() => asFlowchart(model), [model]);
   const vp = useViewport();
   const [tool, setTool] = useState<Tool>('select');
@@ -183,6 +184,32 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     editing: !!edit || !!laneEdit || !!textEdit || !!relEdit,
   });
   const { sel } = bc;
+
+  /* document header (shared engine surface; bounds = nodes + texts + swimlane pool) */
+  const contentBounds = useMemo(() => {
+    const rects = [...geom.values(), ...textGeom.values()];
+    if (fc.pool?.on) rects.push(poolBounds(fc.pool));
+    return unionBounds(rects);
+  }, [geom, textGeom, fc.pool]);
+  const header = useDocHeader({ docName, description, header: fc.header, contentBounds, canvasSel: sel });
+  const setHeaderPos = (position: HeaderPosition) => mutate((m) => ({ header: { position, metadata: m.header?.metadata ?? [] } }));
+
+  /* anchored annotations — shared engine layer (see ERD for the reference wiring) */
+  const annRef = useCallback((target: string): AnnRef | null => {
+    const rel = fc.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), b = geom.get(String(rel.to)); if (a && b) return { x: (a.x + a.w / 2 + b.x + b.w / 2) / 2, y: (a.y + a.h / 2 + b.y + b.h / 2) / 2, w: 0, h: 0, point: true }; }
+    const n = fc.nodes.find((x) => String(x.id) === target);
+    if (n) { const g = geom.get(String(n.id)); if (g) return { x: n.x, y: n.y, w: g.w, h: g.h }; }
+    return null;
+  }, [fc.rels, fc.nodes, geom]);
+  const annObstacles = useMemo(() => [...geom.values()], [geom]);
+  const ann = useAnnotations({
+    annotations: fc.annotations,
+    setAnnotations: (fn) => mutate((m) => ({ annotations: fn(m.annotations) })),
+    annRef, obstacles: annObstacles, accent: ACCENT, panMode: tool === 'pan',
+    toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
+    onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); setSelLane(null); header.setSelected(false); },
+  });
 
   /* selecting a node/edge clears the lane selection */
   useEffect(() => {
@@ -531,6 +558,27 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     );
   });
 
+  /* connector note handles (drag out → a note on the relationship) */
+  const connHandles = fc.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    if (!((selected || hov) && relEdit?.id !== r.id && !bc.palette)) return null;
+    const ca = center(a), cb = center(b);
+    const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y);
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const pp = perp(p1, p2);
+    return (
+      <div key={r.id} data-testid={'flowchart-conn-note-handle-' + r.id} title="Drag out to add a note"
+        onPointerDown={(ev) => ann.createFromTarget(r.id, ev)}
+        style={annHandleStyle(ACCENT, { left: 0, top: 0, transform: `translate(${(mid.x + pp.x * -15).toFixed(1)}px,${(mid.y + pp.y * -15).toFixed(1)}px) translate(-50%,-50%)`, zIndex: 6 })}>
+        <NoteIcon />
+      </div>
+    );
+  });
+
   /* ---- render: node ------------------------------------------------------ */
   const portPos: Record<string, CSSProperties> = {
     top: { top: -6, left: '50%', marginLeft: -5.5 },
@@ -559,7 +607,7 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     return (
       <div
         key={n.id}
-        onPointerDown={(e) => bc.nodeDown(String(n.id), e)}
+        onPointerDown={(e) => { if ((e.ctrlKey || e.metaKey) && tool !== 'pan') { ann.createFromTarget(String(n.id), e); return; } bc.nodeDown(String(n.id), e); }}
         onPointerEnter={() => bc.setHover('node:' + String(n.id))}
         onPointerLeave={() => bc.setHover(null)}
         onDoubleClick={(e) => {
@@ -591,6 +639,13 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
           (['top', 'right', 'bottom', 'left'] as const).map((side) => (
             <div key={side} onPointerDown={(e) => bc.portDown(String(n.id), e)} style={{ position: 'absolute', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'crosshair', zIndex: 8, ...portPos[side] }} />
           ))}
+        {showPorts && (
+          <div data-testid={'flowchart-note-handle-' + n.id} title="Drag out to add a note"
+            onPointerDown={(e) => ann.createFromTarget(String(n.id), e)}
+            style={annHandleStyle(ACCENT, { right: -9, bottom: -9 })}>
+            <NoteIcon />
+          </div>
+        )}
       </div>
     );
   };
@@ -834,6 +889,8 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
         if (textEdit) commitTextEdit();
         if (relEdit) commitRelLabel();
         setSelLane(null);
+        ann.clear();
+        header.setSelected(false);
         bc.bgDown(e);
       }}
       onCanvasDoubleClick={(e) => {
@@ -843,14 +900,23 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
       }}
       world={
         <>
+          {header.show && (
+            <DocHeaderBlock
+              state={header} accent={ACCENT} panMode={tool === 'pan'}
+              onSelect={() => { bc.setSel(null); setSelLane(null); header.setSelected(true); }}
+              onPanStart={bc.bgDown} testId="flowchart-doc-header"
+            />
+          )}
           {renderPool()}
           <svg style={{ position: 'absolute', left: 0, top: 0, width: 100, height: 100, overflow: 'visible', pointerEvents: 'none' }}>
             <FcArrowDefs />
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
           {relLabels}
+          {connHandles}
           {fc.nodes.map(renderNode)}
           {fc.texts.map(renderText)}
+          {ann.layer}
           {bc.link &&
             (() => {
               const a = geom.get(bc.link.fromId);
@@ -867,6 +933,9 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
       }
       hud={
         <>
+          {header.selected && header.show && (
+            <DocHeaderPicker state={header} vp={vp} accent={ACCENT} onPick={setHeaderPos} testId="flowchart-header-toolbar" />
+          )}
           {kindPill}
           {relPill}
           {textPill}

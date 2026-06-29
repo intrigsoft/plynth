@@ -94,7 +94,7 @@ const MUTATING_TOOL = /(?:^|[_.])(create|update|delete|add|remove)(?:[_.]|$)/i;
 const ERD_APPLY_CHANGES_INTENT = {
   name: 'apply_changes',
   description:
-    'Apply a batch of edits to the ERD diagram currently open on screen. Send an ordered list of changes (add/rename/remove tables, add/remove columns, add/remove relationships); tables are referenced by name. The whole batch is validated and applied atomically, and shown to the user for approval first. Call browser_read_page to see the current tables before editing.',
+    'Apply a batch of edits to the ERD diagram currently open on screen. Send an ordered list of changes (add/rename/remove tables, add/remove columns, add/remove relationships, set_header to position the title block and set its metadata, or add_annotation to pin a callout note to a table or relationship); tables are referenced by name. The whole batch is validated and applied atomically, and shown to the user for approval first. Call browser_read_page to see the current tables before editing.',
   schema: erdApplyChangesSchema,
   approval: {
     severity: 'medium' as const,

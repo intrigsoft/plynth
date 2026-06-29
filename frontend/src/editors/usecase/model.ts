@@ -1,6 +1,6 @@
 import type { DiagramModel } from '@plynth/shared';
-import type { TextStyleId } from '../engine';
-import { clamp } from '../engine';
+import type { TextStyleId, DocHeader, Annotation } from '../engine';
+import { clamp, DEFAULT_DOC_HEADER } from '../engine';
 
 /* =============================================================================
  *  Use-case diagram model. Mirrors the backend seed shape exactly:
@@ -52,6 +52,8 @@ export interface UseCaseModel {
   rels: UseCaseRel[];
   texts: TextNode[];
   system: UseCaseSystem | null;
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 export function asUseCase(m: DiagramModel): UseCaseModel {
@@ -62,6 +64,8 @@ export function asUseCase(m: DiagramModel): UseCaseModel {
     rels: a.rels ?? [],
     texts: a.texts ?? [],
     system: a.system ?? null,
+    annotations: a.annotations ?? [],
+    header: a.header ?? { ...DEFAULT_DOC_HEADER },
   };
 }
 
@@ -120,5 +124,6 @@ export function measure(n: UseCaseNode): Measured {
 }
 
 export function maxId(m: UseCaseModel): number {
-  return Math.max(100, ...m.nodes.map((n) => n.id), ...m.texts.map((t) => Number(t.id)));
+  const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
+  return Math.max(100, ...m.nodes.map((n) => n.id), ...m.texts.map((t) => Number(t.id)), ...annIds);
 }
