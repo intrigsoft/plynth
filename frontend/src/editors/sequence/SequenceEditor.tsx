@@ -87,6 +87,7 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
   const [editing, setEditing] = useState<Editing>(null);
   const [editVal, setEditVal] = useState('');
   const [hover, setHover] = useState<{ lifeId: number; pointerY: number } | null>(null);
+  const [hoverHead, setHoverHead] = useState<number | null>(null);
   const [gesture, setGesture] = useState<Gesture>(null);
   const [palette, setPalette] = useState<{ kind: PaletteKind; x: number; y: number } | null>(null);
   const [draggingId, setDraggingId] = useState<string | number | null>(null);
@@ -485,6 +486,7 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
   const actDown = (id: string, e: RPointerEvent) => {
     e.stopPropagation();
     if (maybePan(e)) return;
+    if ((e.ctrlKey || e.metaKey) && !panMode) { ann.createFromTarget(id, e); return; }
     commitEdit();
     const a = seqRef.current.activations.find((x) => x.id === id);
     setSel({ kind: 'act', id });
@@ -552,6 +554,8 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
     if (msg) { const a = seq.lifelines.find((l) => l.id === msg.from), b = seq.lifelines.find((l) => l.id === msg.to); if (a && b) { const x = msg.self ? a.x + 58 : (a.x + b.x) / 2; return { x, y: msg.y, w: 0, h: 0, point: true }; } }
     const fr = seq.frames.find((f) => f.id === target);
     if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const ac = seq.activations.find((a) => a.id === target);
+    if (ac) { const al = seq.lifelines.find((l) => l.id === ac.lifelineId); if (al) return { x: al.x - ACT_W / 2, y: ac.top, w: ACT_W, h: Math.max(8, ac.bottom - ac.top) }; }
     return null;
   };
   const annObstacles = seq.lifelines.map((l) => { const w = measureLife(l).w; return { x: l.x - w / 2, y: HEAD_TOP, w, h: HEAD_H }; });
@@ -596,6 +600,8 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
           <div style={{ position: 'absolute', transform: `translate(${l.x - 7}px,${(hover?.pointerY ?? LINE_TOP) - 7}px) rotate(45deg)`, width: 14, height: 14, borderRadius: 2, background: ACCENT, border: '2px solid #fff', pointerEvents: 'none', zIndex: 6, boxShadow: '0 1px 4px rgba(16,20,27,.28)', animation: 'pulse 1.6s ease-out infinite' }} />
         )}
         <div onPointerDown={(e) => headDown(l.id, e)} onDoubleClick={(e) => { e.stopPropagation(); beginEdit({ kind: 'lifeline', id: l.id }); }}
+          onPointerEnter={() => { if (hoverHead !== l.id) setHoverHead(l.id); }}
+          onPointerLeave={() => { if (hoverHead === l.id) setHoverHead(null); }}
           style={{ position: 'absolute', transform: `translate(${headLeft}px,${HEAD_TOP}px)`, width: w, height: HEAD_H, display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', cursor: panMode ? 'grab' : 'move', zIndex: 5, transition: noTrans ? 'none' : 'transform .3s cubic-bezier(.4,0,.2,1)', borderRadius: 9, boxShadow: selected ? '0 0 0 3px rgba(14,148,136,.18)' : isTarget ? '0 0 0 3px rgba(14,148,136,.32)' : 'none' }}>
           {selected && (
             <button onPointerDown={stopProp} onClick={() => removeLife(l.id)} title="Delete column (Del)"
@@ -603,7 +609,7 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
               <svg width={11} height={11} viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round" /></svg>
             </button>
           )}
-          {selected && (
+          {(selected || hoverHead === l.id) && !palette && !gesture && (
             <div data-testid={'sequence-note-handle-' + l.id} title="Drag out to add a note"
               onPointerDown={(e) => ann.createFromTarget(String(l.id), e)}
               style={annHandleStyle(ACCENT, { right: -10, bottom: -10 })}>
@@ -647,6 +653,11 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
             </button>
             <div onPointerDown={(e) => actResizeDown(a.id, e)} title="Resize"
               style={{ position: 'absolute', left: '50%', bottom: -7, transform: 'translateX(-50%)', width: 14, height: 9, borderRadius: 3, background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'ns-resize', zIndex: 9, boxShadow: '0 1px 3px rgba(16,20,27,.25)' }} />
+            <div data-testid={'sequence-act-note-handle-' + a.id} title="Drag out to add a note"
+              onPointerDown={(e) => ann.createFromTarget(a.id, e)}
+              style={annHandleStyle(ACCENT, { left: 13, bottom: -9 })}>
+              <NoteIcon />
+            </div>
           </>
         )}
       </div>
