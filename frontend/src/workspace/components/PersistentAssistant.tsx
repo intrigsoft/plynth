@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/session';
-import { editorBridge } from '../../editors/editor-bridge';
+import { editorBridge, waitForEditorChange } from '../../editors/editor-bridge';
 import type { ExportFormat } from '../../editors/engine';
 import { AI_OPS, type AiOpsEntry } from '../../editors/ai-registry';
 
@@ -233,12 +233,22 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     const cleanups: Array<() => void> = [];
 
     whenDioscReady(() => cancelled, (diosc) => {
-      diosc('tool', 'navigate', (data: unknown) => {
+      diosc('tool', 'navigate', async (data: unknown) => {
         const d = data as { params?: { path?: string }; path?: string; url?: string };
         const path = d?.params?.path ?? d?.path ?? d?.url;
         if (typeof path !== 'string' || !path) return { error: 'No path provided for navigation' };
-        try { navigate(path); return { navigatedTo: path }; }
-        catch (err) { return { error: err instanceof Error ? err.message : 'Navigation failed' }; }
+        try {
+          // Subscribe BEFORE navigating so we don't miss the new editor's mount,
+          // then resolve only once it has registered its bridge handle. This makes
+          // the kit's post-navigation adapter snapshot reflect the now-open
+          // diagram's tools/schema, so a mid-turn edit targets the right editor.
+          const settled = waitForEditorChange();
+          navigate(path);
+          await settled;
+          return { navigatedTo: path };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : 'Navigation failed' };
+        }
       });
       cleanups.push(() => { try { diosc('tool', 'navigate', null); } catch { /* noop */ } });
 

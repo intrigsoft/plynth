@@ -54,17 +54,57 @@ export interface DiagramCommandHandle {
 }
 
 let current: DiagramCommandHandle | null = null;
+const subscribers = new Set<() => void>();
+const notify = () => subscribers.forEach((cb) => cb());
 
 export const editorBridge = {
   /** The open editor calls this on mount; the returned fn unregisters on unmount. */
   register(handle: DiagramCommandHandle): () => void {
     current = handle;
+    notify();
     return () => {
-      if (current === handle) current = null;
+      if (current === handle) {
+        current = null;
+        notify();
+      }
     };
   },
   /** The assistant adapter calls this each turn to reach the live editor. */
   get(): DiagramCommandHandle | null {
     return current;
   },
+  /**
+   * Notified whenever the open editor changes (register / unregister). Lets the
+   * assistant's `navigate` handler wait for the new route's editor to mount
+   * before resolving, so the kit's post-navigation adapter snapshot reflects the
+   * now-open diagram's tools + schema (mid-turn tool refresh).
+   */
+  subscribe(cb: () => void): () => void {
+    subscribers.add(cb);
+    return () => subscribers.delete(cb);
+  },
 };
+
+/**
+ * Resolve once a new editor has registered its bridge handle after a navigation,
+ * or after `timeoutMs` (e.g. navigating to a non-editor route, where nothing
+ * mounts). Subscribe BEFORE triggering navigation so the mount isn't missed.
+ */
+export function waitForEditorChange(timeoutMs = 700): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      unsub();
+      clearTimeout(timer);
+      resolve();
+    };
+    // Resolve only when a non-null handle is present (the new editor), not on the
+    // outgoing editor's unmount (which fires with `get()` === null first).
+    const unsub = editorBridge.subscribe(() => {
+      if (editorBridge.get()) finish();
+    });
+    const timer = setTimeout(finish, timeoutMs);
+  });
+}
