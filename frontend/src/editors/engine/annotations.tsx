@@ -277,7 +277,11 @@ export function useAnnotations(opts: {
   const [selected, setSelected] = useState<string | null>(null);
   const [edit, setEdit] = useState<{ id: string } | null>(null);
   const [editVal, setEditVal] = useState('');
-  const drag = useRef<{ id: string; sx: number; sy: number; ox: number; oy: number; cx: number; cy: number } | null>(null);
+  // start-world + start-offset + flags for the active drag (create OR reposition)
+  const drag = useRef<{ id: string; swx: number; swy: number; odx: number; ody: number; moved: boolean; isNew: boolean } | null>(null);
+  // latest closures for the window listeners (stable effect, fresh values)
+  const toWorldRef = useRef(toWorld); toWorldRef.current = toWorld;
+  const setAnnRef = useRef(setAnnotations); setAnnRef.current = setAnnotations;
 
   useEffect(() => { if (canvasSel) setSelected(null); }, [canvasSel]);
 
@@ -287,6 +291,32 @@ export function useAnnotations(opts: {
     setEditVal(initial ?? a?.text ?? '');
     setSelected(id);
   };
+  const beginEditRef = useRef(beginEdit);
+  beginEditRef.current = beginEdit;
+
+  /* Note drag — creating from a handle OR repositioning a card — is tracked on the
+   * window, so it works no matter which element holds the pointer (the handle keeps
+   * pointer capture during a create-drag). The stored offset is (drag-start offset +
+   * world delta); the renderer re-resolves collisions every frame, so a note can
+   * never come to rest on top of a node. A freshly-created note opens its editor on
+   * release. */
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const d = drag.current; if (!d) return;
+      const w = toWorldRef.current(e.clientX, e.clientY);
+      const ddx = w.x - d.swx, ddy = w.y - d.swy;
+      if (!d.moved && Math.abs(ddx) + Math.abs(ddy) > 2) d.moved = true;
+      const offset = { dx: d.odx + ddx, dy: d.ody + ddy };
+      setAnnRef.current((as) => as.map((a) => (a.id === d.id ? { ...a, offset } : a)));
+    };
+    const onUp = () => {
+      const d = drag.current; drag.current = null;
+      if (d?.isNew) beginEditRef.current(d.id, 'Note');
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+  }, []);
   const commitEdit = () => {
     if (!edit) return;
     const { id } = edit;
@@ -301,10 +331,14 @@ export function useAnnotations(opts: {
     const w = toWorld(ev.clientX, ev.clientY);
     const m = noteMetrics('Note');
     const cx = ref.x + ref.w / 2, cy = ref.y + ref.h / 2;
+    const odx = w.x - cx - m.w / 2, ody = w.y - cy - m.h / 2;
     const id = nextId();
-    setAnnotations((as) => [...as, { id, target: targetId, text: 'Note', prefer: 'right', offset: { dx: w.x - cx - m.w / 2, dy: w.y - cy - m.h / 2 } }]);
-    onSelect?.();
-    beginEdit(id, 'Note');
+    setAnnotations((as) => [...as, { id, target: targetId, text: 'Note', prefer: 'right', offset: { dx: odx, dy: ody } }]);
+    onSelect?.(); setSelected(id);
+    // hand straight into a window-tracked drag so the user positions the note,
+    // then drops it (the editor opens on release). The handle keeps pointer
+    // capture, which is exactly why the drag is tracked on the window.
+    drag.current = { id, swx: w.x, swy: w.y, odx, ody, moved: false, isNew: true };
   };
   const clear = () => { if (edit) commitEdit(); setSelected(null); };
 
@@ -351,17 +385,12 @@ export function useAnnotations(opts: {
               if (panMode) { onPanStart(e); return; }
               onSelect?.(); setSelected(an.id);
               const ref = annRef(an.target); if (!ref) return;
+              const cx = ref.x + ref.w / 2, cy = ref.y + ref.h / 2;
               const w = toWorld(e.clientX, e.clientY);
-              drag.current = { id: an.id, sx: w.x, sy: w.y, ox: pl.card.x, oy: pl.card.y, cx: ref.x + ref.w / 2, cy: ref.y + ref.h / 2 };
-              try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* noop */ }
+              // start from the note's current RESOLVED position (pl.card) so it
+              // doesn't jump; the window listener takes over from here.
+              drag.current = { id: an.id, swx: w.x, swy: w.y, odx: pl.card.x - cx, ody: pl.card.y - cy, moved: false, isNew: false };
             }}
-            onPointerMove={(e) => {
-              const d = drag.current; if (!d || d.id !== an.id) return;
-              const w = toWorld(e.clientX, e.clientY);
-              const nx = d.ox + (w.x - d.sx), ny = d.oy + (w.y - d.sy);
-              setAnnotations((as) => as.map((a) => (a.id === d.id ? { ...a, offset: { dx: nx - d.cx, dy: ny - d.cy } } : a)));
-            }}
-            onPointerUp={(e) => { if (drag.current?.id === an.id) { drag.current = null; try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ } } }}
             onDoubleClick={(e) => { e.stopPropagation(); beginEdit(an.id); }}>
             <span style={annTextStyle(pl, sel, accent)}>{an.text}</span>
           </div>
