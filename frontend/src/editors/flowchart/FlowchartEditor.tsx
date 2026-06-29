@@ -129,15 +129,46 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     [fc.nodes, geom],
   );
 
+  /* Swimlanes are vertical columns: a step dropped/dragged past the pool's left or
+   *  right edge spawns a new lane sized to contain it. Pure (bar the id counter) so
+   *  it can fold into the SAME mutate as the node change — two mutates in one event
+   *  would clobber (mutate reads a per-render ref). Returns the new pool or null. */
+  const laneForDrop = useCallback((pool: FlowPool | null, nx: number, ny: number, nw: number, nh: number): FlowPool | null => {
+    if (!pool || !pool.on || pool.orient !== 'v') return null;
+    const cross = pool.lanes.reduce((a, l) => a + l.size, 0);
+    const left = pool.x, right = pool.x + cross;
+    const top = pool.y, bottom = pool.y + 38 + pool.len;
+    const cy = ny + nh / 2;
+    if (cy < top - 260 || cy > bottom + 260) return null; // ignore drops far above/below the flow
+    const overR = (nx + nw) - right, overL = left - nx;
+    const TRIG = Math.min(60, nw * 0.3), PAD = 28;
+    const col = LANE_COLORS[pool.lanes.length % LANE_COLORS.length];
+    if (overR > TRIG && overR >= overL) {
+      const lane = { id: 'l' + ++lanc.current, label: 'Lane ' + (pool.lanes.length + 1), color: col, size: Math.max(180, Math.round(overR + PAD)) };
+      return { ...pool, lanes: [...pool.lanes, lane] };
+    }
+    if (overL > TRIG) {
+      const size = Math.max(180, Math.round(overL + PAD));
+      const lane = { id: 'l' + ++lanc.current, label: 'Lane ' + (pool.lanes.length + 1), color: col, size };
+      return { ...pool, x: left - size, lanes: [lane, ...pool.lanes] };
+    }
+    return null;
+  }, []);
+
   /* mutators */
   const createNode = useCallback(
     (kind: string, x: number, y: number): string => {
       const id = ++idc.current;
       const k = (KINDS[kind as FlowKind] ? kind : 'process') as FlowKind;
-      mutate((m) => ({ nodes: [...m.nodes, { id, kind: k, name: DEFNAME[k] || 'Step', x, y }] }));
+      const node = { id, kind: k, name: DEFNAME[k] || 'Step', x, y };
+      const sz = measureNode(node);
+      mutate((m) => {
+        const pool = laneForDrop(m.pool, x, y, sz.w, sz.h);
+        return { nodes: [...m.nodes, node], ...(pool ? { pool } : {}) };
+      });
       return String(id);
     },
-    [mutate],
+    [mutate, laneForDrop],
   );
   const addRel = useCallback(
     (from: string, to: string) => {
@@ -170,6 +201,13 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     rectOf,
     hitNode,
     onMoveNode: (id, x, y) => mutate((m) => ({ nodes: m.nodes.map((n) => (String(n.id) === id ? { ...n, x, y } : n)) })),
+    // dragging an existing step past the pool edge spawns a lane (vertical columns)
+    onMoveNodeEnd: (id, x, y) => {
+      const n = stateRef.current.fc.nodes.find((nd) => String(nd.id) === id);
+      if (!n) return;
+      const sz = measureNode({ ...n, x, y });
+      mutate((m) => { const pool = laneForDrop(m.pool, x, y, sz.w, sz.h); return pool ? { pool } : {}; });
+    },
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createNode(kind, x, y),
     onCreateText: (x, y) => createText(x, y),
@@ -295,16 +333,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     }
   }, [fc.pool, mutate, enableLanes]);
 
-  const addLane = useCallback(() => {
-    if (!fc.pool?.on) {
-      enableLanes();
-      return;
-    }
-    const col = LANE_COLORS[fc.pool.lanes.length % LANE_COLORS.length];
-    const id = 'l' + ++lanc.current;
-    mutate((m) => ({ pool: { ...m.pool!, lanes: [...m.pool!.lanes, { id, label: 'Lane ' + (m.pool!.lanes.length + 1), color: col, size: 188 }] } }));
-    setSelLane(id);
-  }, [fc.pool, mutate, enableLanes]);
 
   const removeLane = useCallback(
     (id: string) =>
@@ -319,7 +347,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     (id: string, color: string) => mutate((m) => ({ pool: { ...m.pool!, lanes: m.pool!.lanes.map((l) => (l.id === id ? { ...l, color } : l)) } })),
     [mutate],
   );
-  const toggleOrient = useCallback(() => mutate((m) => ({ pool: { ...m.pool!, orient: m.pool!.orient === 'v' ? 'h' : 'v' } })), [mutate]);
 
   const beginLaneRename = useCallback(
     (id: string) => {
@@ -861,16 +888,9 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
         <span style={{ font: "700 7.5px var(--mono)", letterSpacing: '.3px' }}>{poolOn ? 'ON' : 'OFF'}</span>
       </button>
       {poolOn && (
-        <>
-          <button onClick={addLane} title="Add a lane" style={{ width: 52, height: 36, border: '1px solid #e4e8ee', borderRadius: 10, background: '#fafbfc', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, color: ACCENT, font: "700 8px var(--mono)" }}>
-            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-            LANE
-          </button>
-          <button onClick={toggleOrient} title="Switch lane orientation" style={{ width: 52, height: 36, border: '1px solid #e4e8ee', borderRadius: 10, background: '#fafbfc', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, color: '#5b6678', font: "700 8px var(--mono)" }}>
-            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d={pool!.orient === 'v' ? 'M4 4v16M10 4v16M16 4v16' : 'M4 5h16M4 12h16M4 19h16'} /></svg>
-            {pool!.orient === 'v' ? 'COLS' : 'ROWS'}
-          </button>
-        </>
+        <div style={{ width: 56, font: "600 7px var(--mono)", color: '#aab4c2', textAlign: 'center', lineHeight: 1.3, letterSpacing: '.2px' }}>
+          drop a step past the edge to add a lane
+        </div>
       )}
     </>
   );

@@ -15,6 +15,8 @@ export interface BoxCanvasOpts {
   /** topmost node id at a world point (excluding one id) */
   hitNode: (wx: number, wy: number, exclude?: string) => string | null;
   onMoveNode: (id: string, x: number, y: number) => void;
+  /** a node-move drag finished (pointer up after real movement) — final world x,y. */
+  onMoveNodeEnd?: (id: string, x: number, y: number) => void;
   onCreateEdge: (from: string, to: string) => void;
   /** create a node of `kind` at world x,y; return its new id (link-to-empty + palette drop) */
   onCreateNode?: (kind: string, x: number, y: number) => string | null;
@@ -139,7 +141,13 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
       setDragging(null);
       if (!a) return;
       const opt = ref.current;
-      if (a.t === 'link') {
+      if (a.t === 'move') {
+        if (a.moved && opt.onMoveNodeEnd) {
+          const dx = (e.clientX - a.sx) / opt.vp.scale;
+          const dy = (e.clientY - a.sy) / opt.vp.scale;
+          opt.onMoveNodeEnd(a.id, a.ox + dx, a.oy + dy);
+        }
+      } else if (a.t === 'link') {
         const w = opt.vp.toWorld(e.clientX, e.clientY);
         const tgt = opt.hitNode(w.x, w.y, a.fromId);
         if (tgt) {
