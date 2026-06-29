@@ -3,7 +3,6 @@ import type { CSSProperties } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
   CLOUD_D,
-  DEFAULT_STYLE_ID,
   EditableLabel,
   EditorShell,
   FRAME_ORDER,
@@ -15,19 +14,13 @@ import {
   PillSelect,
   RailLabel,
   SelectionPill,
-  StylePicker,
-  TextNode,
   autoArrange,
   bbox,
   center,
   descendants,
-  loadTextStyles,
-  measureText,
   nodeFaces,
   perp,
   rectEdge,
-  textStyleById,
-  textStyleCss,
   useBoxCanvas,
   useViewport,
   type ExportFormat,
@@ -49,7 +42,6 @@ import {
   type DeploymentNode,
   type DeploymentRel,
   type RelType,
-  type TextNode as DeploymentText,
 } from './model';
 import { cylinderPath, DpArrowDefs, FRAME_ICON, relDash, relMarkerEnd } from './markers';
 import { runDeploymentExport } from './export';
@@ -84,17 +76,13 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
   const [edit, setEdit] = useState<{ id: number; field: 'name' | number } | null>(null);
   const [editVal, setEditVal] = useState('');
   const [addItem, setAddItem] = useState('');
-  const [textEdit, setTextEdit] = useState<{ id: number } | null>(null);
-  const [textEditVal, setTextEditVal] = useState('');
   const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
   const [relEditVal, setRelEditVal] = useState('');
-  const styles = useMemo(() => loadTextStyles(), []);
   const idc = useRef(maxId(dep));
 
   const patch = useCallback((next: Partial<DeploymentModel>) => onModel({ ...dep, ...next } as DiagramModel), [dep, onModel]);
   const setNodes = (fn: (n: DeploymentNode[]) => DeploymentNode[]) => patch({ nodes: fn(dep.nodes) });
   const setRels = (fn: (r: DeploymentRel[]) => DeploymentRel[]) => patch({ rels: fn(dep.rels) });
-  const setTexts = (fn: (t: DeploymentText[]) => DeploymentText[]) => patch({ texts: fn(dep.texts) });
   const setFrames = (fn: (f: Frame[]) => Frame[]) => patch({ frames: fn(dep.frames) });
 
   /* geometry */
@@ -107,15 +95,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
     return m;
   }, [dep.nodes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
-  const textGeom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const t of dep.texts) {
-      const sz = measureText(t.content, textStyleById(styles, t.styleId));
-      m.set(String(t.id), { x: t.x, y: t.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [dep.texts, styles]);
-  const textRectOf = useCallback((id: string) => textGeom.get(id) ?? null, [textGeom]);
   const frameRectOf = useCallback((id: string) => {
     const f = dep.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
@@ -150,14 +129,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
     setFrames((fs) => [...fs, { id, type: 'frame', label: 'Frame', x, y, w: 300, h: 190 }]);
     return id;
   }, [dep]); // eslint-disable-line
-  /** Create a text node and immediately open its inline editor (palette drop + dbl-click). */
-  const createText = useCallback((x: number, y: number): string => {
-    const id = ++idc.current;
-    setTexts((ts) => [...ts, { id, x, y, content: 'Text', styleId: DEFAULT_STYLE_ID }]);
-    setTextEdit({ id });
-    setTextEditVal('Text');
-    return String(id);
-  }, [dep]); // eslint-disable-line
   const addRel = useCallback((from: string, to: string) => {
     if (from === to) return;
     const src = dep.nodes.find((n) => String(n.id) === from);
@@ -171,9 +142,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
     onMoveNode: (id, x, y) => setNodes((ns) => ns.map((n) => (String(n.id) === id ? { ...n, x, y } : n))),
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createNode(kind, x, y),
-    onCreateText: (x, y) => createText(x, y),
-    textRectOf,
-    onMoveText: (id, x, y) => setTexts((ts) => ts.map((t) => (String(t.id) === id ? { ...t, x, y } : t))),
     onCreateFrame: (x, y) => createFrame(x, y),
     frameRectOf,
     frameContentsOf,
@@ -198,17 +166,16 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
           rels: dep.rels.filter((r) => r.from !== nid && r.to !== nid),
         });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
-      else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
     },
-    editing: !!edit || !!textEdit || !!relEdit,
+    editing: !!edit || !!relEdit,
   });
   const { sel } = bc;
 
-  /* document header (shared engine surface; bounds = union of node/frame/text rects) */
+  /* document header (shared engine surface; bounds = union of node/frame rects) */
   const contentBounds = useMemo(
-    () => unionBounds([...geom.values(), ...dep.frames, ...textGeom.values()]),
-    [geom, dep.frames, textGeom],
+    () => unionBounds([...geom.values(), ...dep.frames]),
+    [geom, dep.frames],
   );
   const header = useDocHeader({ docName, description, header: dep.header, contentBounds, canvasSel: sel });
   const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: dep.header?.metadata ?? [] } });
@@ -291,21 +258,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
     setAddItem('');
   };
 
-  /* ---- text-node inline edit ---- */
-  const beginTextEdit = (id: number) => {
-    const t = dep.texts.find((x) => Number(x.id) === id);
-    if (!t) return;
-    setTextEdit({ id });
-    setTextEditVal(t.content);
-    bc.setSel({ kind: 'text', id: String(id) });
-  };
-  const commitTextEdit = () => {
-    if (!textEdit) return;
-    const { id } = textEdit;
-    setTexts((ts) => ts.map((t) => (Number(t.id) === id ? { ...t, content: textEditVal.trim() ? textEditVal : t.content } : t)));
-    setTextEdit(null);
-  };
-
   /* ---- relationship-label inline edit (double-click a connector) ---- */
   const beginRelLabel = (id: string) => {
     const r = dep.rels.find((x) => x.id === id);
@@ -326,7 +278,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
   /* selection helpers */
   const selRel = sel?.kind === 'edge' ? dep.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? dep.frames.find((f) => f.id === sel.id) : undefined;
-  const selText = sel?.kind === 'text' ? dep.texts.find((t) => String(t.id) === sel.id) : undefined;
   const selNode = sel?.kind === 'node' ? dep.nodes.find((n) => String(n.id) === sel.id) : undefined;
   const deleteNode = (id: number) => { patch({ nodes: dep.nodes.filter((n) => n.id !== id), rels: dep.rels.filter((r) => r.from !== id && r.to !== id) }); bc.setSel(null); };
   const setRelType = (t: RelType) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, type: t } : r)));
@@ -522,27 +473,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
     );
   };
 
-  /* ---- render: a text node ---- */
-  const renderText = (t: DeploymentText) => {
-    const g = textGeom.get(String(t.id))!;
-    const st = textStyleById(styles, t.styleId);
-    const selected = sel?.kind === 'text' && sel.id === String(t.id);
-    const hov = bc.hover === 'text:' + String(t.id);
-    return (
-      <TextNode key={t.id} x={t.x} y={t.y} width={g.w} height={g.h} style={st} content={t.content}
-        accent={ACCENT} selected={selected} hovered={hov} editing={textEdit?.id === Number(t.id)} editValue={textEditVal}
-        panMode={tool === 'pan'}
-        onPointerDown={(ev) => bc.textDown(String(t.id), ev)}
-        onPointerEnter={() => bc.setHover('text:' + String(t.id))}
-        onPointerLeave={() => bc.setHover(null)}
-        onBeginEdit={() => beginTextEdit(Number(t.id))}
-        onEditChange={setTextEditVal}
-        onCommit={commitTextEdit}
-        onCancel={() => setTextEdit(null)}
-        testId={'dep-text-' + t.id} />
-    );
-  };
-
   /* ---- render: a frame container ---- */
   const renderFrame = (f: Frame) => {
     const selected = sel?.kind === 'frame' && sel.id === f.id;
@@ -615,8 +545,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
     <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, opacity: 0.95 }}>
       {bc.palette.kind === 'frame' ? (
         <div style={{ width: 180, height: 110, border: `2px dashed ${FRAME_BLUE}`, background: 'rgba(58,91,255,.06)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: FRAME_BLUE, fontFamily: 'var(--mono)', fontSize: 11 }}>Frame</div>
-      ) : bc.palette.kind === 'text' ? (
-        <div style={{ ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)), padding: '2px 6px', border: `1.5px dashed ${ACCENT}`, borderRadius: 6, background: 'rgba(255,255,255,.85)' }}>Text</div>
       ) : (() => {
         const spec = specForKind(bc.palette.kind);
         return (
@@ -647,10 +575,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
       <PaletteTile label="CLOUD" onPointerDown={(e) => bc.startPaletteDrag('cloud', e)}>
         <svg width={30} height={22} viewBox="0 0 32 22" fill="none" stroke="#0891b2" strokeWidth={1.6} strokeLinejoin="round"><path d="M9 19a5 5 0 01-1.3-9.85 6.2 6.2 0 0112-2A5 5 0 0123 19z" /></svg>
       </PaletteTile>
-      <RailLabel>TEXT</RailLabel>
-      <PaletteTile label="TEXT" onPointerDown={(e) => bc.startPaletteDrag('text', e)}>
-        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
-      </PaletteTile>
       <RailLabel>GROUP</RailLabel>
       <PaletteTile label="FRAME" onPointerDown={(e) => bc.startPaletteDrag('frame', e)}>
         <svg width={30} height={24} viewBox="0 0 34 26" fill="none" stroke="#5b6678" strokeWidth={1.5}><rect x="1.5" y="5" width="31" height="19.5" rx="2" strokeDasharray="3.2 2.4" /><path d="M1.5 5 V2.5 H12 V5" /></svg>
@@ -662,8 +586,7 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
       onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
-      onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
       world={
         <>
           {header.show && (
@@ -681,7 +604,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
           {relLabels}
           {connHandles}
           {dep.nodes.map(renderNode)}
-          {dep.texts.map(renderText)}
           {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
@@ -702,17 +624,6 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
             return (
               <SelectionPill x={(selNode.x + g.w / 2) * vp.scale + vp.tx} y={top * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
                 <PillDelete onClick={() => deleteNode(selNode.id)} title="Delete (Del)" testId="deployment-node-delete" />
-              </SelectionPill>
-            );
-          })()}
-          {selText && (() => {
-            const g = textGeom.get(String(selText.id))!;
-            return (
-              <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-                <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
-                  onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
-                <PillDivider />
-                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="deployment-text-delete" />
               </SelectionPill>
             );
           })()}

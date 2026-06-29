@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
-  DEFAULT_STYLE_ID,
   EditableLabel,
   EditorShell,
   PaletteTile,
@@ -12,18 +11,12 @@ import {
   PillSelect,
   RailLabel,
   SelectionPill,
-  StylePicker,
-  TextNode,
   autoArrange,
   bbox,
   center,
   descendants,
-  loadTextStyles,
-  measureText,
   perp,
   rectEdge,
-  textStyleById,
-  textStyleCss,
   useBoxCanvas,
   useViewport,
   type ExportFormat,
@@ -49,7 +42,6 @@ import {
   type CompRel,
   type ComponentModel,
   type RelType,
-  type TextNode as CompText,
 } from './model';
 import { CompDefs, ComponentGlyph, FrameGlyph, KindIcon } from './markers';
 import { runComponentExport } from './export';
@@ -68,17 +60,13 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
   const [edit, setEdit] = useState<{ id: number; field: 'name' | number } | null>(null);
   const [editVal, setEditVal] = useState('');
   const [addItem, setAddItem] = useState('');
-  const [textEdit, setTextEdit] = useState<{ id: number } | null>(null);
-  const [textEditVal, setTextEditVal] = useState('');
   const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
   const [relEditVal, setRelEditVal] = useState('');
-  const styles = useMemo(() => loadTextStyles(), []);
   const idc = useRef(maxId(cm));
 
   const patch = useCallback((next: Partial<ComponentModel>) => onModel({ ...cm, ...next } as DiagramModel), [cm, onModel]);
   const setComps = (fn: (c: CompNode[]) => CompNode[]) => patch({ components: fn(cm.components) });
   const setRels = (fn: (r: CompRel[]) => CompRel[]) => patch({ rels: fn(cm.rels) });
-  const setTexts = (fn: (t: CompText[]) => CompText[]) => patch({ texts: fn(cm.texts) });
   const setFrames = (fn: (f: Frame[]) => Frame[]) => patch({ frames: fn(cm.frames) });
 
   /* geometry (measured at unselected size, like the ERD editor — the box grows
@@ -92,15 +80,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
     return m;
   }, [cm.components]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
-  const textGeom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const t of cm.texts) {
-      const sz = measureText(t.content, textStyleById(styles, t.styleId));
-      m.set(String(t.id), { x: t.x, y: t.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [cm.texts, styles]);
-  const textRectOf = useCallback((id: string) => textGeom.get(id) ?? null, [textGeom]);
   const frameRectOf = useCallback((id: string) => {
     const f = cm.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
@@ -136,14 +115,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
     setFrames((fs) => [...fs, { id, type: 'frame', label: 'Frame', x, y, w: 300, h: 190 }]);
     return id;
   }, [cm]); // eslint-disable-line
-  /** Create a text node and immediately open its inline editor (palette drop + dbl-click). */
-  const createText = useCallback((x: number, y: number): string => {
-    const id = ++idc.current;
-    setTexts((ts) => [...ts, { id, x, y, content: 'Text', styleId: DEFAULT_STYLE_ID }]);
-    setTextEdit({ id });
-    setTextEditVal('Text');
-    return String(id);
-  }, [cm]); // eslint-disable-line
   const addRel = useCallback((from: string, to: string) => {
     if (from === to) return;
     const id = 'r' + ++idc.current;
@@ -155,9 +126,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
     onMoveNode: (id, x, y) => setComps((cs) => cs.map((c) => (String(c.id) === id ? { ...c, x, y } : c))),
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createComp(kind, x, y),
-    onCreateText: (x, y) => createText(x, y),
-    textRectOf,
-    onMoveText: (id, x, y) => setTexts((ts) => ts.map((t) => (String(t.id) === id ? { ...t, x, y } : t))),
     onCreateFrame: (x, y) => createFrame(x, y),
     frameRectOf,
     frameContentsOf,
@@ -182,17 +150,16 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
           rels: cm.rels.filter((r) => r.from !== nid && r.to !== nid),
         });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
-      else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
     },
-    editing: !!edit || !!textEdit || !!relEdit,
+    editing: !!edit || !!relEdit,
   });
   const { sel } = bc;
 
-  /* document header (shared engine surface; bounds = union of node/frame/text rects) */
+  /* document header (shared engine surface; bounds = union of node/frame rects) */
   const contentBounds = useMemo(
-    () => unionBounds([...geom.values(), ...cm.frames, ...textGeom.values()]),
-    [geom, cm.frames, textGeom],
+    () => unionBounds([...geom.values(), ...cm.frames]),
+    [geom, cm.frames],
   );
   const header = useDocHeader({ docName, description, header: cm.header, contentBounds, canvasSel: sel });
   const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: cm.header?.metadata ?? [] } });
@@ -268,21 +235,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
     setAddItem('');
   };
 
-  /* ---- text-node inline edit ---- */
-  const beginTextEdit = (id: number) => {
-    const t = cm.texts.find((x) => Number(x.id) === id);
-    if (!t) return;
-    setTextEdit({ id });
-    setTextEditVal(t.content);
-    bc.setSel({ kind: 'text', id: String(id) });
-  };
-  const commitTextEdit = () => {
-    if (!textEdit) return;
-    const { id } = textEdit;
-    setTexts((ts) => ts.map((t) => (Number(t.id) === id ? { ...t, content: textEditVal.trim() ? textEditVal : t.content } : t)));
-    setTextEdit(null);
-  };
-
   /* ---- relationship-label inline edit (double-click a connector) ---- */
   const beginRelLabel = (id: string) => {
     const r = cm.rels.find((x) => x.id === id);
@@ -303,7 +255,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
   /* selection helpers */
   const selComp = sel?.kind === 'node' ? cm.components.find((c) => c.id === Number(sel.id)) : undefined;
   const selRel = sel?.kind === 'edge' ? cm.rels.find((r) => r.id === sel.id) : undefined;
-  const selText = sel?.kind === 'text' ? cm.texts.find((t) => String(t.id) === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? cm.frames.find((f) => f.id === sel.id) : undefined;
   const setKind = (id: number, kind: CompKind) => setComps((cs) => cs.map((c) => (c.id === id ? { ...c, kind, stereotype: null } : c)));
   const setRelType = (type: RelType) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, type } : r)));
@@ -476,27 +427,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
     );
   };
 
-  /* ---- render text node ---- */
-  const renderText = (t: CompText) => {
-    const g = textGeom.get(String(t.id))!;
-    const st = textStyleById(styles, t.styleId);
-    const selected = sel?.kind === 'text' && sel.id === String(t.id);
-    const hov = bc.hover === 'text:' + String(t.id);
-    return (
-      <TextNode key={t.id} x={t.x} y={t.y} width={g.w} height={g.h} style={st} content={t.content}
-        accent={ACCENT} selected={selected} hovered={hov} editing={textEdit?.id === Number(t.id)} editValue={textEditVal}
-        panMode={tool === 'pan'}
-        onPointerDown={(ev) => bc.textDown(String(t.id), ev)}
-        onPointerEnter={() => bc.setHover('text:' + String(t.id))}
-        onPointerLeave={() => bc.setHover(null)}
-        onBeginEdit={() => beginTextEdit(Number(t.id))}
-        onEditChange={setTextEditVal}
-        onCommit={commitTextEdit}
-        onCancel={() => setTextEdit(null)}
-        testId={'component-text-' + t.id} />
-    );
-  };
-
   /* ---- frames (largest first, behind) ---- */
   const framesSorted = [...cm.frames].sort((a, b) => b.w * b.h - a.w * a.h);
 
@@ -538,8 +468,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
     <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, opacity: 0.95 }}>
       {bc.palette.kind === 'frame' ? (
         <div style={{ width: 180, height: 110, border: `2px dashed ${ACCENT}`, background: 'rgba(79,70,229,.06)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: ACCENT, fontFamily: 'var(--mono)', fontSize: 11 }}>Frame</div>
-      ) : bc.palette.kind === 'text' ? (
-        <div style={{ ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)), padding: '2px 6px', border: `1.5px dashed ${ACCENT}`, borderRadius: 6, background: 'rgba(255,255,255,.85)' }}>Text</div>
       ) : (
         (() => {
           const k = (KINDS[bc.palette.kind as CompKind] ? bc.palette.kind : 'component') as CompKind;
@@ -562,10 +490,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
       {KORDER.map((k) => (
         <PaletteTile key={k} label={KINDS[k].short} onPointerDown={(e) => bc.startPaletteDrag(k, e)}><KindIcon kind={k} color={KINDS[k].color} size={20} /></PaletteTile>
       ))}
-      <RailLabel>TEXT</RailLabel>
-      <PaletteTile label="TEXT" onPointerDown={(e) => bc.startPaletteDrag('text', e)}>
-        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
-      </PaletteTile>
       <RailLabel>GROUP</RailLabel>
       <PaletteTile label="FRAME" onPointerDown={(e) => bc.startPaletteDrag('frame', e)}>
         <svg width={30} height={22} viewBox="0 0 34 26" fill="none" stroke="#5b6678" strokeWidth={1.4}><rect x="1.5" y="5" width="31" height="19.5" rx="2" strokeDasharray="3.2 2.4" /><path d="M1.5 5 V2.5 H12 V5" /></svg>
@@ -577,8 +501,7 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
       onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
-      onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
       world={
         <>
           {header.show && (
@@ -614,7 +537,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
           {relLabels}
           {connHandles}
           {cm.components.map(renderComp)}
-          {cm.texts.map(renderText)}
           {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
@@ -630,17 +552,6 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
           )}
           {kindPill}
           {relPill}
-          {selText && (() => {
-            const g = textGeom.get(String(selText.id))!;
-            return (
-              <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-                <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
-                  onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
-                <PillDivider />
-                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="component-text-delete" />
-              </SelectionPill>
-            );
-          })()}
           {selFrame && (
             <SelectionPill x={selFrame.x * vp.scale + vp.tx} y={selFrame.y * vp.scale + vp.ty - 16} transform="translate(0,-100%)">
               <PillSelect accent={ACCENT} value={selFrame.type} options={frameTypeOptions} onChange={(v) => setFrameType(v as FrameType)} testId="component-frame-type" />

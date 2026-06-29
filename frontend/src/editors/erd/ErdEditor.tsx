@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
-  DEFAULT_STYLE_ID,
   EditableLabel,
   EditorShell,
   PaletteTile,
@@ -12,18 +11,12 @@ import {
   PillToggle,
   RailLabel,
   SelectionPill,
-  StylePicker,
-  TextNode,
   autoArrange,
   bbox,
   center,
   descendants,
-  loadTextStyles,
-  measureText,
   perp,
   rectEdge,
-  textStyleById,
-  textStyleCss,
   useBoxCanvas,
   useViewport,
   DocHeaderBlock,
@@ -37,7 +30,6 @@ import {
   type HeaderPosition,
   type ExportFormat,
   type Frame,
-  type Rect,
   type Tool,
 } from '../engine';
 import type { EditorProps } from '../types';
@@ -54,7 +46,6 @@ import {
   type ErdEntity,
   type ErdModel,
   type ErdRel,
-  type TextNode as ErdText,
 } from './model';
 import { CrowDefs, cardMarker } from './markers';
 import { buildErdGeom, renderErdExport, runErdExport } from './export';
@@ -69,11 +60,8 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
   const [edit, setEdit] = useState<{ id: number; field: 'name' | number } | null>(null);
   const [editVal, setEditVal] = useState('');
   const [addCol, setAddCol] = useState('');
-  const [textEdit, setTextEdit] = useState<{ id: number } | null>(null);
-  const [textEditVal, setTextEditVal] = useState('');
   const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
   const [relEditVal, setRelEditVal] = useState('');
-  const styles = useMemo(() => loadTextStyles(), []);
   const idc = useRef(maxId(erd));
 
   const patch = useCallback((next: Partial<ErdModel>) => onModel({ ...erd, ...next } as DiagramModel), [erd, onModel]);
@@ -108,21 +96,11 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
   );
   const setEntities = (fn: (e: ErdEntity[]) => ErdEntity[]) => patch({ entities: fn(erd.entities) });
   const setRels = (fn: (r: ErdRel[]) => ErdRel[]) => patch({ rels: fn(erd.rels) });
-  const setTexts = (fn: (t: ErdText[]) => ErdText[]) => patch({ texts: fn(erd.texts) });
   const setFrames = (fn: (f: Frame[]) => Frame[]) => patch({ frames: fn(erd.frames) });
 
   /* geometry — shared with the headless export path (see buildErdGeom). */
   const geom = useMemo(() => buildErdGeom(erd), [erd.entities]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
-  const textGeom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const t of erd.texts) {
-      const sz = measureText(t.content, textStyleById(styles, t.styleId));
-      m.set(String(t.id), { x: t.x, y: t.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [erd.texts, styles]);
-  const textRectOf = useCallback((id: string) => textGeom.get(id) ?? null, [textGeom]);
   const frameRectOf = useCallback((id: string) => {
     const f = erd.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
@@ -157,14 +135,6 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
     setFrames((fs) => [...fs, { id, type: 'frame', label: 'Frame', x, y, w: 300, h: 190 }]);
     return id;
   }, [erd]); // eslint-disable-line
-  /** Create a text node and immediately open its inline editor (palette drop + dbl-click). */
-  const createText = useCallback((x: number, y: number): string => {
-    const id = ++idc.current;
-    setTexts((ts) => [...ts, { id, x, y, content: 'Text', styleId: DEFAULT_STYLE_ID }]);
-    setTextEdit({ id });
-    setTextEditVal('Text');
-    return String(id);
-  }, [erd]); // eslint-disable-line
   const addRel = useCallback((from: string, to: string) => {
     if (from === to) return;
     const id = 'r' + ++idc.current;
@@ -176,9 +146,6 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
     onMoveNode: (id, x, y) => setEntities((es) => es.map((e) => (String(e.id) === id ? { ...e, x, y } : e))),
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createEntity(kind, x, y),
-    onCreateText: (x, y) => createText(x, y),
-    textRectOf,
-    onMoveText: (id, x, y) => setTexts((ts) => ts.map((t) => (String(t.id) === id ? { ...t, x, y } : t))),
     onCreateFrame: (x, y) => createFrame(x, y),
     frameRectOf,
     frameContentsOf,
@@ -204,20 +171,19 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
           rels: erd.rels.filter((r) => r.from !== nid && r.to !== nid),
         });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
-      else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
     },
-    editing: !!edit || !!textEdit || !!relEdit,
+    editing: !!edit || !!relEdit,
   });
   const { sel } = bc;
 
   /* ---- document header — title = docName, description = doc desc; only the
    *  discrete position + metadata are stored on the model (no coordinates). The
    *  shared engine hook owns placement + selection; we only supply the content
-   *  bounds (union of every node / frame / text rect on the canvas). */
+   *  bounds (union of every node / frame rect on the canvas). */
   const contentBounds = useMemo(
-    () => unionBounds([...geom.values(), ...erd.frames, ...textGeom.values()]),
-    [geom, erd.frames, textGeom],
+    () => unionBounds([...geom.values(), ...erd.frames]),
+    [geom, erd.frames],
   );
   const header = useDocHeader({ docName, description, header: erd.header, contentBounds, canvasSel: sel });
   const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: erd.header?.metadata ?? [] } });
@@ -299,21 +265,6 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
     setAddCol('');
   };
 
-  /* ---- text-node inline edit ---- */
-  const beginTextEdit = (id: number) => {
-    const t = erd.texts.find((x) => Number(x.id) === id);
-    if (!t) return;
-    setTextEdit({ id });
-    setTextEditVal(t.content);
-    bc.setSel({ kind: 'text', id: String(id) });
-  };
-  const commitTextEdit = () => {
-    if (!textEdit) return;
-    const { id } = textEdit;
-    setTexts((ts) => ts.map((t) => (Number(t.id) === id ? { ...t, content: textEditVal.trim() ? textEditVal : t.content } : t)));
-    setTextEdit(null);
-  };
-
   /* ---- relationship-label inline edit (double-click a connector) ---- */
   const beginRelLabel = (id: string) => {
     const r = erd.rels.find((x) => x.id === id);
@@ -334,7 +285,6 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
   /* ---- relationship + frame selection helpers ---- */
   const selRel = sel?.kind === 'edge' ? erd.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? erd.frames.find((f) => f.id === sel.id) : undefined;
-  const selText = sel?.kind === 'text' ? erd.texts.find((t) => String(t.id) === sel.id) : undefined;
   const selNode = sel?.kind === 'node' ? erd.entities.find((e) => String(e.id) === sel.id) : undefined;
   const deleteNode = (id: number) => { patch({ entities: erd.entities.filter((x) => x.id !== id), rels: erd.rels.filter((r) => r.from !== id && r.to !== id) }); bc.setSel(null); };
   const setCard = (end: 'from' | 'to', c: Card) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, [end === 'from' ? 'fromCard' : 'toCard']: c } : r)));
@@ -474,27 +424,6 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
     );
   };
 
-  /* ---- render text node ---- */
-  const renderText = (t: ErdText) => {
-    const g = textGeom.get(String(t.id))!;
-    const st = textStyleById(styles, t.styleId);
-    const selected = sel?.kind === 'text' && sel.id === String(t.id);
-    const hov = bc.hover === 'text:' + String(t.id);
-    return (
-      <TextNode key={t.id} x={t.x} y={t.y} width={g.w} height={g.h} style={st} content={t.content}
-        accent={ACCENT} selected={selected} hovered={hov} editing={textEdit?.id === Number(t.id)} editValue={textEditVal}
-        panMode={tool === 'pan'}
-        onPointerDown={(ev) => bc.textDown(String(t.id), ev)}
-        onPointerEnter={() => bc.setHover('text:' + String(t.id))}
-        onPointerLeave={() => bc.setHover(null)}
-        onBeginEdit={() => beginTextEdit(Number(t.id))}
-        onEditChange={setTextEditVal}
-        onCommit={commitTextEdit}
-        onCancel={() => setTextEdit(null)}
-        testId={'erd-text-' + t.id} />
-    );
-  };
-
   /* ---- render frames (largest first, behind) ---- */
   const framesSorted = [...erd.frames].sort((a, b) => b.w * b.h - a.w * a.h);
 
@@ -525,8 +454,6 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
     <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, opacity: 0.95 }}>
       {bc.palette.kind === 'frame' ? (
         <div style={{ width: 180, height: 110, border: '2px dashed #3a5bff', background: 'rgba(58,91,255,.06)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#3a5bff', fontSize: 12 }}>Frame</div>
-      ) : bc.palette.kind === 'text' ? (
-        <div style={{ ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)), padding: '2px 6px', border: `1.5px dashed ${ACCENT}`, borderRadius: 6, background: 'rgba(255,255,255,.85)' }}>Text</div>
       ) : (
         <div style={{ width: 158, border: `${bc.palette.kind === 'weak' ? '3px double' : '1.6px solid'} ${ACCENT}`, borderRadius: 7, background: '#fff', boxShadow: '0 8px 20px rgba(16,20,27,.2)' }}>
           <div style={{ background: '#f3e8f7', padding: '6px 10px', textAlign: 'center', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12 }}>{bc.palette.kind === 'weak' ? 'new_detail' : 'new_table'}</div>
@@ -544,10 +471,6 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
       <PaletteTile label="WEAK" onPointerDown={(e) => bc.startPaletteDrag('weak', e)}>
         <svg width={30} height={22} viewBox="0 0 30 22" fill="none" stroke="#5b6678" strokeWidth={1.3}><rect x="2" y="2" width="26" height="18" rx="2" /><rect x="5" y="5" width="20" height="12" rx="1" /></svg>
       </PaletteTile>
-      <RailLabel>TEXT</RailLabel>
-      <PaletteTile label="TEXT" onPointerDown={(e) => bc.startPaletteDrag('text', e)}>
-        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
-      </PaletteTile>
       <RailLabel>GROUP</RailLabel>
       <PaletteTile label="FRAME" onPointerDown={(e) => bc.startPaletteDrag('frame', e)}>
         <svg width={30} height={22} viewBox="0 0 30 22" fill="none" stroke="#5b6678" strokeWidth={1.3}><path d="M3 6h10v-3h14v16H3Z" strokeDasharray="3 2" /></svg>
@@ -559,8 +482,7 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
       onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
-      onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
       world={
         <>
           {header.show && (
@@ -593,7 +515,6 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
           {relLabels}
           {connHandles}
           {erd.entities.map(renderEntity)}
-          {erd.texts.map(renderText)}
           {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
@@ -613,17 +534,6 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
             return (
               <SelectionPill x={(selNode.x + g.w / 2) * vp.scale + vp.tx} y={selNode.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
                 <PillDelete onClick={() => deleteNode(selNode.id)} title="Delete table (Del)" testId="erd-node-delete" />
-              </SelectionPill>
-            );
-          })()}
-          {selText && (() => {
-            const g = textGeom.get(String(selText.id))!;
-            return (
-              <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-                <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
-                  onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
-                <PillDivider />
-                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="erd-text-delete" />
               </SelectionPill>
             );
           })()}

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
-  DEFAULT_STYLE_ID,
   EditableLabel,
   EditorShell,
   PaletteTile,
@@ -14,17 +13,11 @@ import {
   RailDivider,
   RailLabel,
   SelectionPill,
-  StylePicker,
-  TextNode,
   autoArrange,
   bbox,
   center,
-  loadTextStyles,
-  measureText,
   perp,
   rectEdge,
-  textStyleById,
-  textStyleCss,
   useBoxCanvas,
   useViewport,
   type ExportFormat,
@@ -49,7 +42,6 @@ import {
   type FlowKind,
   type FlowNode,
   type FlowPool,
-  type TextNode as FlowText,
 } from './model';
 import { FcArrowDefs, KindGlyph, NodeShape, shapePath } from './shapes';
 import { runFlowchartExport } from './export';
@@ -71,11 +63,8 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
   const [selLane, setSelLane] = useState<string | null>(null);
   const [laneEdit, setLaneEdit] = useState<string | null>(null);
   const [laneEditVal, setLaneEditVal] = useState('');
-  const [textEdit, setTextEdit] = useState<{ id: number } | null>(null);
-  const [textEditVal, setTextEditVal] = useState('');
   const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
   const [relEditVal, setRelEditVal] = useState('');
-  const styles = useMemo(() => loadTextStyles(), []);
 
   const idc = useRef(maxNodeId(fc));
   const lanc = useRef(maxLaneSeq(fc));
@@ -89,7 +78,7 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
   const selLaneRef = useRef(selLane);
   selLaneRef.current = selLane;
   const editingRef = useRef(false);
-  editingRef.current = !!edit || !!laneEdit || !!textEdit || !!relEdit;
+  editingRef.current = !!edit || !!laneEdit || !!relEdit;
 
   /** Latest-state mutation — always reads the freshest model. */
   const mutate = useCallback((fn: (m: FlowchartModel) => Partial<FlowchartModel>) => {
@@ -107,15 +96,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     return m;
   }, [fc.nodes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
-  const textGeom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const t of fc.texts) {
-      const sz = measureText(t.content, textStyleById(styles, t.styleId));
-      m.set(String(t.id), { x: t.x, y: t.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [fc.texts, styles]);
-  const textRectOf = useCallback((id: string) => textGeom.get(id) ?? null, [textGeom]);
   const hitNode = useCallback(
     (wx: number, wy: number, exclude?: string) => {
       for (let i = fc.nodes.length - 1; i >= 0; i--) {
@@ -182,18 +162,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     (id: number) => mutate((m) => ({ nodes: m.nodes.filter((n) => n.id !== id), rels: m.rels.filter((r) => r.from !== id && r.to !== id) })),
     [mutate],
   );
-  /** Create a text node and immediately open its inline editor (palette drop + dbl-click). */
-  const createText = useCallback(
-    (x: number, y: number): string => {
-      const id = ++idc.current;
-      mutate((m) => ({ texts: [...m.texts, { id, x, y, content: 'Text', styleId: DEFAULT_STYLE_ID }] }));
-      setTextEdit({ id });
-      setTextEditVal('Text');
-      return String(id);
-    },
-    [mutate],
-  );
-
   const bc = useBoxCanvas({
     vp,
     tool,
@@ -210,25 +178,21 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     },
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createNode(kind, x, y),
-    onCreateText: (x, y) => createText(x, y),
-    textRectOf,
-    onMoveText: (id, x, y) => mutate((m) => ({ texts: m.texts.map((t) => (String(t.id) === id ? { ...t, x, y } : t)) })),
     onDelete: (sel) => {
       if (!sel) return;
       if (sel.kind === 'node') removeNode(Number(sel.id));
       else if (sel.kind === 'edge') mutate((m) => ({ rels: m.rels.filter((r) => r.id !== sel.id) }));
-      else if (sel.kind === 'text') mutate((m) => ({ texts: m.texts.filter((t) => String(t.id) !== sel.id) }));
     },
-    editing: !!edit || !!laneEdit || !!textEdit || !!relEdit,
+    editing: !!edit || !!laneEdit || !!relEdit,
   });
   const { sel } = bc;
 
-  /* document header (shared engine surface; bounds = nodes + texts + swimlane pool) */
+  /* document header (shared engine surface; bounds = nodes + swimlane pool) */
   const contentBounds = useMemo(() => {
-    const rects = [...geom.values(), ...textGeom.values()];
+    const rects: Rect[] = [...geom.values()];
     if (fc.pool?.on) rects.push(poolBounds(fc.pool));
     return unionBounds(rects);
-  }, [geom, textGeom, fc.pool]);
+  }, [geom, fc.pool]);
   const header = useDocHeader({ docName, description, header: fc.header, contentBounds, canvasSel: sel });
   const setHeaderPos = (position: HeaderPosition) => mutate((m) => ({ header: { position, metadata: m.header?.metadata ?? [] } }));
 
@@ -474,21 +438,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
   };
   const setKind = (id: number, kind: FlowKind) => mutate((m) => ({ nodes: m.nodes.map((n) => (n.id === id ? { ...n, kind } : n)) }));
 
-  /* ---- text-node inline edit -------------------------------------------- */
-  const beginTextEdit = (id: number) => {
-    const t = fc.texts.find((x) => Number(x.id) === id);
-    if (!t) return;
-    setTextEdit({ id });
-    setTextEditVal(t.content);
-    bc.setSel({ kind: 'text', id: String(id) });
-  };
-  const commitTextEdit = () => {
-    if (!textEdit) return;
-    const { id } = textEdit;
-    mutate((m) => ({ texts: m.texts.map((t) => (Number(t.id) === id ? { ...t, content: textEditVal.trim() ? textEditVal : t.content } : t)) }));
-    setTextEdit(null);
-  };
-
   /* ---- connector-label inline edit (double-click a connector) ----------- */
   const beginRelLabel = (id: string) => {
     const r = fc.rels.find((x) => x.id === id);
@@ -677,39 +626,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     );
   };
 
-  /* ---- render: text node ------------------------------------------------- */
-  const renderText = (t: FlowText) => {
-    const g = textGeom.get(String(t.id))!;
-    const st = textStyleById(styles, t.styleId);
-    const selected = sel?.kind === 'text' && sel.id === String(t.id);
-    const hov = bc.hover === 'text:' + String(t.id);
-    return (
-      <TextNode
-        key={t.id}
-        x={t.x}
-        y={t.y}
-        width={g.w}
-        height={g.h}
-        style={st}
-        content={t.content}
-        accent={ACCENT}
-        selected={selected}
-        hovered={hov}
-        editing={textEdit?.id === Number(t.id)}
-        editValue={textEditVal}
-        panMode={tool === 'pan'}
-        onPointerDown={(ev) => bc.textDown(String(t.id), ev)}
-        onPointerEnter={() => bc.setHover('text:' + String(t.id))}
-        onPointerLeave={() => bc.setHover(null)}
-        onBeginEdit={() => beginTextEdit(Number(t.id))}
-        onEditChange={setTextEditVal}
-        onCommit={commitTextEdit}
-        onCancel={() => setTextEdit(null)}
-        testId={'fc-text-' + t.id}
-      />
-    );
-  };
-
   /* ---- render: swimlane pool --------------------------------------------- */
   const pool = fc.pool;
   const poolOn = !!(pool && pool.on);
@@ -786,19 +702,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
 
   /* ---- HUD: toolbars ----------------------------------------------------- */
   const selNode = sel?.kind === 'node' ? fc.nodes.find((n) => n.id === Number(sel.id)) : undefined;
-  const selText = sel?.kind === 'text' ? fc.texts.find((t) => String(t.id) === sel.id) : undefined;
-
-  let textPill: React.ReactNode = null;
-  if (selText) {
-    const g = textGeom.get(String(selText.id))!;
-    textPill = (
-      <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-        <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT} onPick={(id) => mutate((m) => ({ texts: m.texts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)) }))} />
-        <PillDivider />
-        <PillDelete label="" onClick={() => { mutate((m) => ({ texts: m.texts.filter((t) => String(t.id) !== String(selText.id)) })); bc.setSel(null); }} title="Delete (Del)" testId="flowchart-text-delete" />
-      </SelectionPill>
-    );
-  }
 
   let kindPill: React.ReactNode = null;
   if (selNode) {
@@ -850,14 +753,10 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
   }
 
   /* ---- palette ghost ----------------------------------------------------- */
-  const ghostK = bc.palette && bc.palette.kind !== 'text' ? KINDS[bc.palette.kind as FlowKind] : undefined;
+  const ghostK = bc.palette ? KINDS[bc.palette.kind as FlowKind] : undefined;
   const ghost =
     bc.palette &&
-    (bc.palette.kind === 'text' ? (
-      <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, opacity: 0.95, ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)), padding: '2px 6px', border: `1.5px dashed ${ACCENT}`, borderRadius: 6, background: 'rgba(255,255,255,.85)' }}>
-        Text
-      </div>
-    ) : ghostK ? (
+    (ghostK ? (
       <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px', border: `1.6px solid ${ACCENT}`, borderRadius: 9, background: '#fff', boxShadow: '0 10px 28px rgba(16,20,27,.2)', opacity: 0.96 }}>
         <KindGlyph iconD1={ghostK.iconD1} iconD2={ghostK.iconD2} color={ghostK.color} size={20} />
         <span style={{ font: '700 12px var(--mono)', color: '#1b2230' }}>{ghostK.label}</span>
@@ -876,11 +775,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
           </PaletteTile>
         );
       })}
-      <RailDivider />
-      <RailLabel>TEXT</RailLabel>
-      <PaletteTile label="TEXT" onPointerDown={(e) => bc.startPaletteDrag('text', e)}>
-        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
-      </PaletteTile>
       <RailDivider />
       <RailLabel>LANES</RailLabel>
       <button onClick={toggleLanes} title="Toggle swimlanes" style={{ width: 52, height: 50, border: `1px solid ${poolOn ? ACCENT : '#e4e8ee'}`, borderRadius: 10, background: poolOn ? '#15803d12' : '#fafbfc', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, color: poolOn ? ACCENT : '#5b6678' }}>
@@ -906,17 +800,11 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
       onAutoLayout={() => void autoLayout()}
       onCanvasPointerDown={(e) => {
         if (edit) commitEdit();
-        if (textEdit) commitTextEdit();
         if (relEdit) commitRelLabel();
         setSelLane(null);
         ann.clear();
         header.setSelected(false);
         bc.bgDown(e);
-      }}
-      onCanvasDoubleClick={(e) => {
-        const w = vp.toWorld(e.clientX, e.clientY);
-        const id = createText(w.x - 28, w.y - 15);
-        bc.setSel({ kind: 'text', id });
       }}
       world={
         <>
@@ -935,7 +823,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
           {relLabels}
           {connHandles}
           {fc.nodes.map(renderNode)}
-          {fc.texts.map(renderText)}
           {ann.layer}
           {bc.link &&
             (() => {
@@ -958,7 +845,6 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
           )}
           {kindPill}
           {relPill}
-          {textPill}
           {lanePill}
           {bc.link && (
             <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', background: '#10141b', color: '#e6eaf0', borderRadius: 9, padding: '8px 14px', fontSize: 12.5, zIndex: 26 }}>

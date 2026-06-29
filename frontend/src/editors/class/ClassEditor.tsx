@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
-  DEFAULT_STYLE_ID,
   EditableLabel,
   EditorShell,
   PaletteTile,
@@ -13,18 +12,12 @@ import {
   RailDivider,
   RailLabel,
   SelectionPill,
-  StylePicker,
-  TextNode,
   autoArrange,
   bbox,
   center,
   descendants,
-  loadTextStyles,
-  measureText,
   perp,
   rectEdge,
-  textStyleById,
-  textStyleCss,
   useBoxCanvas,
   useViewport,
   FRAME_ORDER,
@@ -47,7 +40,6 @@ import {
   type ClassNode,
   type ClassRel,
   type RelType,
-  type TextNode as ClassText,
 } from './model';
 import { ClassMarkers } from './markers';
 import { runClassExport } from './export';
@@ -77,17 +69,13 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
   const [editVal, setEditVal] = useState('');
   const [addAttr, setAddAttr] = useState('');
   const [addMethod, setAddMethod] = useState('');
-  const [textEdit, setTextEdit] = useState<{ id: number } | null>(null);
-  const [textEditVal, setTextEditVal] = useState('');
   const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
   const [relEditVal, setRelEditVal] = useState('');
-  const styles = useMemo(() => loadTextStyles(), []);
   const idc = useRef(maxClassId(cls));
 
   const patch = useCallback((next: Partial<ClassModel>) => onModel({ ...cls, ...next } as DiagramModel), [cls, onModel]);
   const setClasses = (fn: (c: ClassNode[]) => ClassNode[]) => patch({ classes: fn(cls.classes) });
   const setRels = (fn: (r: ClassRel[]) => ClassRel[]) => patch({ rels: fn(cls.rels) });
-  const setTexts = (fn: (t: ClassText[]) => ClassText[]) => patch({ texts: fn(cls.texts) });
   const setFrames = (fn: (f: Frame[]) => Frame[]) => patch({ frames: fn(cls.frames) });
 
   /* geometry (unselected — keeps edges stable, DOM auto-grows when selected) */
@@ -100,15 +88,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
     return m;
   }, [cls.classes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
-  const textGeom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const t of cls.texts) {
-      const sz = measureText(t.content, textStyleById(styles, t.styleId));
-      m.set(String(t.id), { x: t.x, y: t.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [cls.texts, styles]);
-  const textRectOf = useCallback((id: string) => textGeom.get(id) ?? null, [textGeom]);
   const frameRectOf = useCallback((id: string) => {
     const f = cls.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
@@ -143,14 +122,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
     setFrames((fs) => [...fs, { id, type: 'frame', label: FRAME_TYPES.frame.label, x, y, w: 300, h: 190 }]);
     return id;
   }, [cls]); // eslint-disable-line
-  /** Create a text node and immediately open its inline editor (palette drop + dbl-click). */
-  const createText = useCallback((x: number, y: number): string => {
-    const id = ++idc.current;
-    setTexts((ts) => [...ts, { id, x, y, content: 'Text', styleId: DEFAULT_STYLE_ID }]);
-    setTextEdit({ id });
-    setTextEditVal('Text');
-    return String(id);
-  }, [cls]); // eslint-disable-line
   const addRel = useCallback((from: string, to: string) => {
     if (from === to) return;
     const id = 'r' + ++idc.current;
@@ -162,9 +133,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
     onMoveNode: (id, x, y) => setClasses((cs) => cs.map((c) => (String(c.id) === id ? { ...c, x, y } : c))),
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createClass(kind, x, y),
-    onCreateText: (x, y) => createText(x, y),
-    textRectOf,
-    onMoveText: (id, x, y) => setTexts((ts) => ts.map((t) => (String(t.id) === id ? { ...t, x, y } : t))),
     onCreateFrame: (x, y) => createFrame(x, y),
     frameRectOf,
     frameContentsOf,
@@ -189,18 +157,17 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
           rels: cls.rels.filter((r) => r.from !== nid && r.to !== nid),
         });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
-      else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
     },
-    editing: !!edit || !!textEdit || !!relEdit,
+    editing: !!edit || !!relEdit,
   });
   const { sel } = bc;
 
   /* document header (title = docName, description = doc desc; shared engine
-   * surface — we only supply the union of all node / frame / text rects). */
+   * surface — we only supply the union of all node / frame rects). */
   const contentBounds = useMemo(
-    () => unionBounds([...geom.values(), ...cls.frames, ...textGeom.values()]),
-    [geom, cls.frames, textGeom],
+    () => unionBounds([...geom.values(), ...cls.frames]),
+    [geom, cls.frames],
   );
   const header = useDocHeader({ docName, description, header: cls.header, contentBounds, canvasSel: sel });
   const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: cls.header?.metadata ?? [] } });
@@ -283,21 +250,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
     if (kind === 'attr') setAddAttr(''); else setAddMethod('');
   };
 
-  /* ---- text-node inline edit ---- */
-  const beginTextEdit = (id: number) => {
-    const t = cls.texts.find((x) => Number(x.id) === id);
-    if (!t) return;
-    setTextEdit({ id });
-    setTextEditVal(t.content);
-    bc.setSel({ kind: 'text', id: String(id) });
-  };
-  const commitTextEdit = () => {
-    if (!textEdit) return;
-    const { id } = textEdit;
-    setTexts((ts) => ts.map((t) => (Number(t.id) === id ? { ...t, content: textEditVal.trim() ? textEditVal : t.content } : t)));
-    setTextEdit(null);
-  };
-
   /* ---- relationship-label inline edit (double-click a connector) ---- */
   const beginRelLabel = (id: string) => {
     const r = cls.rels.find((x) => x.id === id);
@@ -318,7 +270,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
   /* ---- relationship + frame selection helpers ---- */
   const selRel = sel?.kind === 'edge' ? cls.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? cls.frames.find((f) => f.id === sel.id) : undefined;
-  const selText = sel?.kind === 'text' ? cls.texts.find((t) => String(t.id) === sel.id) : undefined;
   const selNode = sel?.kind === 'node' ? cls.classes.find((c) => String(c.id) === sel.id) : undefined;
   const deleteNode = (id: number) => { patch({ classes: cls.classes.filter((x) => x.id !== id), rels: cls.rels.filter((r) => r.from !== id && r.to !== id) }); bc.setSel(null); };
   const setRelType = (type: RelType) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, type } : r)));
@@ -479,27 +430,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
     );
   };
 
-  /* ---- render: a text node ---- */
-  const renderText = (t: ClassText) => {
-    const g = textGeom.get(String(t.id))!;
-    const st = textStyleById(styles, t.styleId);
-    const selected = sel?.kind === 'text' && sel.id === String(t.id);
-    const hov = bc.hover === 'text:' + String(t.id);
-    return (
-      <TextNode key={t.id} x={t.x} y={t.y} width={g.w} height={g.h} style={st} content={t.content}
-        accent={ACCENT} selected={selected} hovered={hov} editing={textEdit?.id === Number(t.id)} editValue={textEditVal}
-        panMode={tool === 'pan'}
-        onPointerDown={(ev) => bc.textDown(String(t.id), ev)}
-        onPointerEnter={() => bc.setHover('text:' + String(t.id))}
-        onPointerLeave={() => bc.setHover(null)}
-        onBeginEdit={() => beginTextEdit(Number(t.id))}
-        onEditChange={setTextEditVal}
-        onCommit={commitTextEdit}
-        onCancel={() => setTextEdit(null)}
-        testId={'class-text-' + t.id} />
-    );
-  };
-
   /* ---- render frames (largest first, behind) ---- */
   const framesSorted = [...cls.frames].sort((a, b) => b.w * b.h - a.w * a.h);
 
@@ -528,8 +458,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
     <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, opacity: 0.95 }}>
       {bc.palette.kind === 'frame' ? (
         <div style={{ width: 180, height: 110, border: '2px dashed #3a5bff', background: 'rgba(58,91,255,.06)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#3a5bff', fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 600 }}>Frame</div>
-      ) : bc.palette.kind === 'text' ? (
-        <div style={{ ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)), padding: '2px 6px', border: `1.5px dashed ${ACCENT}`, borderRadius: 6, background: 'rgba(255,255,255,.85)' }}>Text</div>
       ) : (
         <div style={{ width: 152, border: `1.6px solid ${ACCENT}`, borderRadius: 7, background: '#fff', boxShadow: '0 10px 28px rgba(16,20,27,.2)', overflow: 'hidden' }}>
           <div style={{ background: '#eef2f7', padding: '7px 10px', textAlign: 'center', fontFamily: 'var(--mono)' }}>
@@ -553,11 +481,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
         <svg width={32} height={24} viewBox="0 0 34 26" fill="none" stroke="#1b2230"><rect x="1.5" y="1.5" width="31" height="23" rx="2.5" strokeWidth={1.6} strokeDasharray="3.4 2.4" /><line x1="1.5" y1="11" x2="32.5" y2="11" strokeWidth={1.6} /></svg>
       </PaletteTile>
       <RailDivider />
-      <RailLabel>TEXT</RailLabel>
-      <PaletteTile label="TEXT" onPointerDown={(e) => bc.startPaletteDrag('text', e)}>
-        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
-      </PaletteTile>
-      <RailDivider />
       <RailLabel>GROUP</RailLabel>
       <PaletteTile label="FRAME" onPointerDown={(e) => bc.startPaletteDrag('frame', e)}>
         <svg width={30} height={24} viewBox="0 0 34 26" fill="none" stroke="#1b2230"><rect x="1.5" y="5" width="31" height="19.5" rx="2" strokeWidth={1.5} strokeDasharray="3.2 2.4" /><path d="M1.5 5 V2.5 H12 V5" strokeWidth={1.5} /></svg>
@@ -569,7 +492,7 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
       onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createClass('class', w.x - 78, w.y - 30); bc.setSel({ kind: 'node', id }); beginEdit(Number(id), { t: 'name' }); }}
       world={
         <>
@@ -606,7 +529,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
           {relLabels}
           {connHandles}
           {cls.classes.map(renderClass)}
-          {cls.texts.map(renderText)}
           {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
@@ -626,17 +548,6 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
             return (
               <SelectionPill x={(selNode.x + g.w / 2) * vp.scale + vp.tx} y={selNode.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
                 <PillDelete onClick={() => deleteNode(selNode.id)} title="Delete class (Del)" testId="class-node-delete" />
-              </SelectionPill>
-            );
-          })()}
-          {selText && (() => {
-            const g = textGeom.get(String(selText.id))!;
-            return (
-              <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-                <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
-                  onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
-                <PillDivider />
-                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="class-text-delete" />
               </SelectionPill>
             );
           })()}

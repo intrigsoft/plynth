@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as RPointerEvent } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
-  DEFAULT_STYLE_ID,
   EditorShell,
   PaletteTile,
   PillBtn,
@@ -10,12 +9,6 @@ import {
   PillLabel,
   RailLabel,
   SelectionPill,
-  StylePicker,
-  TextNode,
-  loadTextStyles,
-  measureText,
-  textStyleById,
-  textStyleCss,
   useViewport,
   DocHeaderBlock,
   DocHeaderPicker,
@@ -26,7 +19,6 @@ import {
   NoteIcon,
   type AnnRef,
   type HeaderPosition,
-  type TextStyleId,
   type Tool,
   type ExportFormat,
 } from '../engine';
@@ -59,7 +51,6 @@ type Sel =
   | { kind: 'msg'; id: string }
   | { kind: 'act'; id: string }
   | { kind: 'frame'; id: string }
-  | { kind: 'text'; id: string }
   | null;
 
 type Editing =
@@ -67,7 +58,6 @@ type Editing =
   | { kind: 'message'; id: string }
   | { kind: 'guard'; id: string }
   | { kind: 'section'; id: string; sub: string }
-  | { kind: 'text'; id: string }
   | null;
 
 type Gesture =
@@ -75,11 +65,10 @@ type Gesture =
   | { mode: 'activation'; lifeId: number; top: number; bottom: number }
   | null;
 
-type PaletteKind = 'participant' | 'actor' | 'fragment' | 'text';
+type PaletteKind = 'participant' | 'actor' | 'fragment';
 
 type Drag =
   | { kind: 'life'; id: number; sx: number; ox: number; moved: boolean }
-  | { kind: 'text'; id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean }
   | { kind: 'seq'; id: number; sx: number; sy: number; startY: number; mode: null | 'message' | 'activation' }
   | { kind: 'msg'; id: string; sy: number; oy: number; moved: boolean }
   | { kind: 'act'; id: string; sy: number; otop: number; obottom: number; moved: boolean }
@@ -101,9 +90,7 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
   const [gesture, setGesture] = useState<Gesture>(null);
   const [palette, setPalette] = useState<{ kind: PaletteKind; x: number; y: number } | null>(null);
   const [draggingId, setDraggingId] = useState<string | number | null>(null);
-  const [textHover, setTextHover] = useState<string | null>(null);
 
-  const styles = useState(() => loadTextStyles())[0];
   const vp = useViewport();
   const panMode = tool === 'pan' || spacePan;
 
@@ -234,23 +221,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
   const removeOperand = (id: string, sid: string) =>
     patch({ frames: seqRef.current.frames.map((f) => (f.id === id ? { ...f, sections: f.sections.filter((s) => s.id !== sid) } : f)) });
 
-  /* ---- text annotations --------------------------------------------------- */
-  const createText = (opts: { content?: string; x?: number; y?: number; select?: boolean; edit?: boolean }) => {
-    const id = 'txt' + ++idRef.current;
-    let px = opts.x;
-    let py = opts.y;
-    if (px == null) { const c = viewCenter(); px = c.x - 28; py = c.y - 14; }
-    patch({ texts: [...seqRef.current.texts, { id, content: opts.content ?? 'Text', x: px, y: py ?? 0, styleId: DEFAULT_STYLE_ID }] });
-    if (opts.select) setSel({ kind: 'text', id });
-    if (opts.edit) beginEdit({ kind: 'text', id });
-    return id;
-  };
-  const removeText = (id: string) => {
-    patch({ texts: seqRef.current.texts.filter((t) => String(t.id) !== id) });
-    setSel((s) => (s?.kind === 'text' && s.id === id ? null : s));
-  };
-  const setTextStyle = (id: string, styleId: TextStyleId) => patch({ texts: seqRef.current.texts.map((t) => (String(t.id) === id ? { ...t, styleId } : t)) });
-
   const setLifeKind = (id: number, kind: LifelineKind) => patch({ lifelines: seqRef.current.lifelines.map((l) => (l.id === id ? { ...l, kind } : l)) });
   const setMsgKind = (id: string, kind: MessageKind) => patch({ messages: seqRef.current.messages.map((m) => (m.id === id ? { ...m, kind } : m)) });
   const reverseMsg = (id: string) => patch({ messages: seqRef.current.messages.map((m) => (m.id === id ? { ...m, from: m.to, to: m.from } : m)) });
@@ -262,7 +232,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
     if (ed.kind === 'lifeline') v = life(ed.id)?.name ?? '';
     else if (ed.kind === 'message') v = seqRef.current.messages.find((m) => m.id === ed.id)?.name ?? '';
     else if (ed.kind === 'guard') v = seqRef.current.frames.find((f) => f.id === ed.id)?.guard ?? '';
-    else if (ed.kind === 'text') v = seqRef.current.texts.find((t) => String(t.id) === ed.id)?.content ?? '';
     else v = seqRef.current.frames.find((f) => f.id === ed.id)?.sections.find((s) => s.id === ed.sub)?.guard ?? '';
     setEditing(ed);
     setEditVal(v);
@@ -274,7 +243,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
     if (ed.kind === 'lifeline') patch({ lifelines: seqRef.current.lifelines.map((l) => (l.id === ed.id ? { ...l, name: v || l.name } : l)) });
     else if (ed.kind === 'message') patch({ messages: seqRef.current.messages.map((m) => (m.id === ed.id ? { ...m, name: v || m.name } : m)) });
     else if (ed.kind === 'guard') patch({ frames: seqRef.current.frames.map((f) => (f.id === ed.id ? { ...f, guard: v } : f)) });
-    else if (ed.kind === 'text') patch({ texts: seqRef.current.texts.map((t) => (String(t.id) === ed.id ? { ...t, content: v || t.content } : t)) });
     else patch({ frames: seqRef.current.frames.map((f) => (f.id === ed.id ? { ...f, sections: f.sections.map((s) => (s.id === ed.sub ? { ...s, guard: v } : s)) } : f)) });
     setEditing(null);
   }, [patch]);
@@ -338,12 +306,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
       if (Math.abs(e.clientX - d.sx) > 3) d.moved = true;
       setDraggingId(d.id);
       patch({ lifelines: seqRef.current.lifelines.map((l) => (l.id === d.id ? { ...l, x: d.ox + dx } : l)) });
-    } else if (d.kind === 'text') {
-      const dx = (e.clientX - d.sx) / scale;
-      const dy = (e.clientY - d.sy) / scale;
-      if (Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) > 3) d.moved = true;
-      setDraggingId(d.id);
-      patch({ texts: seqRef.current.texts.map((t) => (String(t.id) === d.id ? { ...t, x: d.ox + dx, y: d.oy + dy } : t)) });
     } else if (d.kind === 'seq') {
       const dx = e.clientX - d.sx;
       const dy = e.clientY - d.sy;
@@ -426,9 +388,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
       if (d.pkind === 'fragment') {
         if (over && d.moved) { const w = vp.toWorld(e.clientX, e.clientY); createFrame({ x: w.x - 150, y: w.y - 26, select: true }); }
         else { const c = viewCenter(); createFrame({ x: c.x - 150, y: c.y - 40, select: true }); }
-      } else if (d.pkind === 'text') {
-        if (over && d.moved) { const w = vp.toWorld(e.clientX, e.clientY); createText({ x: w.x - 28, y: w.y - 14, select: true, edit: true }); }
-        else { createText({ select: true, edit: true }); }
       } else {
         const kind: LifelineKind = d.pkind === 'actor' ? 'actor' : 'participant';
         if (over && d.moved) { const w = vp.toWorld(e.clientX, e.clientY); const id = createLife({ name: kind === 'actor' ? 'Actor' : 'Participant', kind, x: w.x, select: true }); beginEdit({ kind: 'lifeline', id }); }
@@ -457,7 +416,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
       if (s.kind === 'life') removeLife(s.id);
       else if (s.kind === 'msg') removeMsg(s.id);
       else if (s.kind === 'act') removeAct(s.id);
-      else if (s.kind === 'text') removeText(s.id);
       else removeFrame(s.id);
     } else if (e.key === 'v' || e.key === 'V') setTool('select');
     else if (e.key === 'h' || e.key === 'H') setTool((t) => (t === 'pan' ? 'select' : 'pan'));
@@ -563,14 +521,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
     setSel({ kind: 'frame', id });
     if (sc) dragRef.current = { kind: 'divider', id, sid, sy: e.clientY, oOff: sc.offset };
   };
-  const textDown = (id: string, e: RPointerEvent) => {
-    e.stopPropagation();
-    if (maybePan(e)) return;
-    commitEdit();
-    const t = seqRef.current.texts.find((x) => String(x.id) === id);
-    setSel({ kind: 'text', id });
-    if (t) dragRef.current = { kind: 'text', id, sx: e.clientX, sy: e.clientY, ox: t.x, oy: t.y, moved: false };
-  };
   const palStart = (pkind: PaletteKind, e: RPointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -585,11 +535,10 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
   const lineH = bottom - LINE_TOP;
 
   /* document header (shared engine surface). Bounds span the lifeline heads down
-   * to the timeline bottom, plus any fragments / text annotations. */
+   * to the timeline bottom, plus any fragments. */
   const headerBounds = unionBounds([
     ...seq.lifelines.map((l) => { const w = measureLife(l).w; return { x: l.x - w / 2, y: HEAD_TOP, w, h: bottom - HEAD_TOP }; }),
     ...seq.frames.map((f) => ({ x: f.x, y: f.y, w: f.w, h: f.h })),
-    ...seq.texts.map((t) => { const m = measureText(t.content, textStyleById(styles, t.styleId)); return { x: t.x, y: t.y, w: m.w, h: m.h }; }),
   ]);
   const header = useDocHeader({ docName, description, header: seq.header, contentBounds: headerBounds, canvasSel: sel });
   const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: seq.header?.metadata ?? [] } });
@@ -806,26 +755,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
     );
   });
 
-  /* text annotations */
-  const textEls = seq.texts.map((t) => {
-    const st = textStyleById(styles, t.styleId);
-    const m = measureText(t.content, st);
-    const selected = sel?.kind === 'text' && sel.id === String(t.id);
-    return (
-      <TextNode key={t.id} x={t.x} y={t.y} width={m.w} height={m.h} style={st} content={t.content}
-        accent={ACCENT} selected={selected} hovered={textHover === String(t.id)} editing={editing?.kind === 'text' && editing.id === String(t.id)} editValue={editVal}
-        panMode={panMode}
-        onPointerDown={(e) => textDown(String(t.id), e)}
-        onPointerEnter={() => setTextHover(String(t.id))}
-        onPointerLeave={() => setTextHover((h) => (h === String(t.id) ? null : h))}
-        onBeginEdit={() => beginEdit({ kind: 'text', id: String(t.id) })}
-        onEditChange={setEditVal}
-        onCommit={commitEdit}
-        onCancel={() => setEditing(null)}
-        testId={'sequence-text-' + t.id} />
-    );
-  });
-
   /* gesture previews */
   let gestureEl: JSX.Element | null = null;
   if (gesture?.mode === 'message') {
@@ -859,7 +788,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
   const selLife = sel?.kind === 'life' ? seq.lifelines.find((l) => l.id === sel.id) : undefined;
   const selMsg = sel?.kind === 'msg' ? seq.messages.find((m) => m.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? seq.frames.find((f) => f.id === sel.id) : undefined;
-  const selText = sel?.kind === 'text' ? seq.texts.find((t) => String(t.id) === sel.id) : undefined;
 
   const hintText = gesture?.mode === 'message'
     ? gesture.tgt != null && gesture.tgt === gesture.src
@@ -880,10 +808,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
       <RailLabel>WRAP</RailLabel>
       <PaletteTile label="FRAME" onPointerDown={(e) => palStart('fragment', e)}>
         <svg width={32} height={24} viewBox="0 0 34 26" fill="none"><rect x={1.5} y={2.5} width={31} height={22} rx={1.5} stroke="#1b2230" strokeWidth={1.5} /><path d="M1.5 2.5 H13 V7 L10 10 H1.5 Z" fill="#1b2230" fillOpacity={0.08} stroke="#1b2230" strokeWidth={1.2} /></svg>
-      </PaletteTile>
-      <RailLabel>TEXT</RailLabel>
-      <PaletteTile label="TEXT" onPointerDown={(e) => palStart('text', e)}>
-        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
       </PaletteTile>
     </>
   );
@@ -926,7 +850,6 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
             <g style={{ pointerEvents: 'auto' }}>{messagePaths}</g>
           </svg>
           {messageLabelEls}
-          {textEls}
           {ann.layer}
           {gestureEl}
         </>
@@ -989,30 +912,15 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
             </SelectionPill>
           )}
 
-          {selText && (() => {
-            const m = measureText(selText.content, textStyleById(styles, selText.styleId));
-            return (
-              <SelectionPill x={(selText.x + m.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-                <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT} onPick={(id) => setTextStyle(String(selText.id), id)} />
-                <PillDivider />
-                <PillBtn accent={ACCENT} color="#ff8a8a" onClick={() => removeText(String(selText.id))} title="Delete (Del)">{delIcon}</PillBtn>
-              </SelectionPill>
-            );
-          })()}
-
           {palette && (
             <div style={{ position: 'fixed', left: palette.x, top: palette.y, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, ...(palette.kind === 'fragment'
               ? { width: 210, height: 120, border: '2px dashed ' + ACCENT, borderRadius: 3, background: 'rgba(14,148,136,.06)' }
-              : palette.kind === 'text'
-                ? { padding: '2px 6px', border: '1.5px dashed ' + ACCENT, borderRadius: 6, background: 'rgba(255,255,255,.85)' }
-                : { minWidth: 120, height: 54, border: '2px dashed ' + ACCENT, borderRadius: 9, background: 'rgba(14,148,136,.07)', display: 'flex', alignItems: 'center', justifyContent: 'center' }) }}>
+              : { minWidth: 120, height: 54, border: '2px dashed ' + ACCENT, borderRadius: 9, background: 'rgba(14,148,136,.07)', display: 'flex', alignItems: 'center', justifyContent: 'center' }) }}>
               {palette.kind === 'fragment'
                 ? <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 40, height: 18, margin: '6px 0 0 6px', padding: '0 10px', background: ACCENT, color: '#fff', font: "700 10px 'JetBrains Mono',monospace", clipPath: 'polygon(0 0,100% 0,100% 54%,76% 100%,0 100%)' }}>alt</span>
-                : palette.kind === 'text'
-                  ? <span style={{ ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)) }}>Text</span>
-                  : palette.kind === 'actor'
-                    ? <svg width={26} height={32} viewBox="0 0 22 30" fill="none"><circle cx={11} cy={4.5} r={3.4} stroke={ACCENT} strokeWidth={1.7} /><path d="M11 8v8M4.5 10.5h13M11 16l-4.5 6M11 16l4.5 6" stroke={ACCENT} strokeWidth={1.7} strokeLinecap="round" /></svg>
-                    : <span style={{ font: "700 12px 'Hanken Grotesk',sans-serif", color: ACCENT }}>Participant</span>}
+                : palette.kind === 'actor'
+                  ? <svg width={26} height={32} viewBox="0 0 22 30" fill="none"><circle cx={11} cy={4.5} r={3.4} stroke={ACCENT} strokeWidth={1.7} /><path d="M11 8v8M4.5 10.5h13M11 16l-4.5 6M11 16l4.5 6" stroke={ACCENT} strokeWidth={1.7} strokeLinecap="round" /></svg>
+                  : <span style={{ font: "700 12px 'Hanken Grotesk',sans-serif", color: ACCENT }}>Participant</span>}
             </div>
           )}
         </>

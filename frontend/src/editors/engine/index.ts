@@ -1,7 +1,4 @@
 export * from './geometry';
-export * from './textstyles';
-export * from './text-node';
-export * from './style-picker';
 export * from './editable-label';
 export * from './frames';
 export * from './doc-header';

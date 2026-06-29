@@ -1,5 +1,5 @@
 import type { DiagramModel } from '@plynth/shared';
-import type { Frame, TextStyleId, DocHeader, Annotation } from '../engine';
+import type { Frame, DocHeader, Annotation } from '../engine';
 import { clamp, DEFAULT_DOC_HEADER } from '../engine';
 
 // The document-header model (discrete position + metadata; title/description are
@@ -38,21 +38,10 @@ export interface ErdRel {
   label?: string;
 }
 
-/** A free-floating styled text annotation. `styleId` references one of the
- *  project's shared text styles; only the id is stored (see `engine/textstyles`). */
-export interface TextNode {
-  id: string | number;
-  x: number;
-  y: number;
-  content: string;
-  styleId: TextStyleId;
-}
-
 export interface ErdModel {
   type: 'erd';
   entities: ErdEntity[];
   rels: ErdRel[];
-  texts: TextNode[];
   frames: Frame[];
   /** Anchored callout notes — pinned to an entity / relationship / frame, never
    *  free coordinates (see engine/annotations). */
@@ -66,7 +55,6 @@ export function asErd(m: DiagramModel): ErdModel {
     type: 'erd',
     entities: a.entities ?? [],
     rels: a.rels ?? [],
-    texts: a.texts ?? [],
     frames: a.frames ?? [],
     annotations: a.annotations ?? [],
     header: a.header ?? { ...DEFAULT_DOC_HEADER },
@@ -120,5 +108,5 @@ export function maxId(m: ErdModel): number {
   // Annotation ids ("a103") share the same counter, so fold their numeric suffix
   // in — otherwise a reload restarts at 100 and re-mints an existing note's id.
   const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
-  return Math.max(100, ...m.entities.map((e) => e.id), ...m.texts.map((t) => Number(t.id)), ...annIds);
+  return Math.max(100, ...m.entities.map((e) => e.id), ...annIds);
 }

@@ -117,10 +117,6 @@ export function applyErdChanges(model: ErdModel, changes: ErdChange[]): ApplyRes
   // One counter across entity + relationship ids so nothing collides.
   let idc = 100;
   for (const e of entities) idc = Math.max(idc, e.id);
-  for (const t of model.texts) {
-    const n = Number(t.id);
-    if (Number.isFinite(n)) idc = Math.max(idc, n);
-  }
   for (const r of rels) {
     const m = /(\d+)/.exec(String(r.id));
     if (m) idc = Math.max(idc, Number(m[1]));

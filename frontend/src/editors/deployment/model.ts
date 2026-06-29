@@ -1,5 +1,5 @@
 import type { DiagramModel } from '@plynth/shared';
-import type { Frame, TextStyleId, DocHeader, Annotation } from '../engine';
+import type { Frame, DocHeader, Annotation } from '../engine';
 import { DEFAULT_DOC_HEADER } from '../engine';
 
 /* UML deployment topology: hardware/runtime "nodes" (3D boxes, cylinders,
@@ -29,21 +29,10 @@ export interface DeploymentRel {
   label?: string;
 }
 
-/** A free-floating styled text annotation. `styleId` references one of the
- *  project's shared text styles; only the id is stored (see `engine/textstyles`). */
-export interface TextNode {
-  id: string | number;
-  x: number;
-  y: number;
-  content: string;
-  styleId: TextStyleId;
-}
-
 export interface DeploymentModel {
   type: 'deployment';
   nodes: DeploymentNode[];
   rels: DeploymentRel[];
-  texts: TextNode[];
   frames: Frame[];
   annotations: Annotation[];
   header?: DocHeader;
@@ -54,7 +43,7 @@ export const DEPTH = 12;
 
 export function asDeployment(m: DiagramModel): DeploymentModel {
   const a = m as Partial<DeploymentModel>;
-  return { type: 'deployment', nodes: a.nodes ?? [], rels: a.rels ?? [], texts: a.texts ?? [], frames: a.frames ?? [], annotations: a.annotations ?? [], header: a.header ?? { ...DEFAULT_DOC_HEADER } };
+  return { type: 'deployment', nodes: a.nodes ?? [], rels: a.rels ?? [], frames: a.frames ?? [], annotations: a.annotations ?? [], header: a.header ?? { ...DEFAULT_DOC_HEADER } };
 }
 
 /** Shape classification used by both render + export. */
@@ -92,5 +81,5 @@ export function measureNode(n: DeploymentNode, selected: boolean): { w: number; 
 
 export function maxId(m: DeploymentModel): number {
   const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
-  return Math.max(100, ...m.nodes.map((n) => n.id), ...m.texts.map((t) => Number(t.id)), ...annIds);
+  return Math.max(100, ...m.nodes.map((n) => n.id), ...annIds);
 }
