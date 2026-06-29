@@ -1,4 +1,5 @@
-import { bbox, center, download, downloadDataUrl, escAttr, escText, NS, rasterize, rectEdge, roundTopRect, slugify, type ExportFormat, type Rect } from '../engine';
+import { bbox, center, download, downloadDataUrl, escAttr, escText, NS, rectEdge, roundTopRect, renderDiagramFile, type ExportFormat, type Rect } from '../engine';
+import type { RenderedDiagramFile } from '../editor-bridge';
 import { headerHeight, relMeta, type ClassModel } from './model';
 
 function markerDefs(): string {
@@ -102,11 +103,28 @@ export function buildClassXml(cls: ClassModel, docName: string, projectName: str
   return out.join('\n');
 }
 
+/**
+ * Render the diagram to a downloadable file WITHOUT touching the DOM: returns a
+ * `data:` URL for png/jpg and raw markup for svg/xml. This is the headless half
+ * of export — `runClassExport` wraps it for the menu's local download, and the
+ * assistant's `export_diagram` intent hands the result to the kit to upload and
+ * surface as a chat download chip.
+ */
+export async function renderClassExport(
+  fmt: ExportFormat,
+  cls: ClassModel,
+  geom: Map<string, Rect>,
+  docName: string,
+  projectName: string,
+): Promise<RenderedDiagramFile> {
+  return renderDiagramFile(fmt, docName, {
+    svg: () => buildClassSvg(cls, geom),
+    xml: () => buildClassXml(cls, docName, projectName),
+  });
+}
+
 export async function runClassExport(fmt: ExportFormat, cls: ClassModel, geom: Map<string, Rect>, docName: string, projectName: string): Promise<void> {
-  const name = slugify(docName);
-  if (fmt === 'xml') return download(`${name}.xml`, buildClassXml(cls, docName, projectName), 'application/xml');
-  const { svg, w, h } = buildClassSvg(cls, geom);
-  if (fmt === 'svg') return download(`${name}.svg`, svg, 'image/svg+xml');
-  const url = await rasterize(svg, { scale: 2.5, jpeg: fmt === 'jpg', bg: '#ffffff', width: w, height: h });
-  downloadDataUrl(`${name}.${fmt}`, url);
+  const file = await renderClassExport(fmt, cls, geom, docName, projectName);
+  if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
+  download(file.filename, file.content, file.mimeType);
 }

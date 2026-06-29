@@ -91,6 +91,22 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
         // any component-local ref.
         exportImage: (fmt) =>
           renderErdExport(fmt, aiLatest.current.erd, buildErdGeom(aiLatest.current.erd), aiLatest.current.docName),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (the assistant's `rearrange_annotations` tool /
+        // the editor's "Arrange comments" action). Pure cosmetic model edit —
+        // the renderer re-derives each callout box from its target every frame.
+        rearrangeAnnotations: () => {
+          const { erd: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
       }),
     [],
   );

@@ -42,7 +42,9 @@ import {
   type SeqLifeline,
 } from './model';
 import { SeqDefs, markerFor } from './markers';
-import { runSequenceExport } from './export';
+import { renderSequenceExport, runSequenceExport } from './export';
+import { editorBridge } from '../editor-bridge';
+import { applySequenceChanges, sequenceReadSnapshot, type SequenceChange } from './ai-ops';
 
 const ACCENT = '#0e9488';
 
@@ -296,6 +298,49 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
     exportApi.current = (fmt: ExportFormat) => void runSequenceExport(fmt, seq, docName);
     return () => { exportApi.current = null; };
   }, [seq, docName, exportApi]);
+
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
+   * registers a handle the root-level adapter calls; a `latest` ref keeps the
+   * handle reading the current model without re-registering on every keystroke. */
+  const aiLatest = useRef({ seq, onModel, docName });
+  aiLatest.current = { seq, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'sequence',
+        read: () => sequenceReadSnapshot(aiLatest.current.seq, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applySequenceChanges(aiLatest.current.seq, changes as SequenceChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent — the
+        // sequence build fns derive their own geometry from the live model, so
+        // the exported image matches what's on screen without reading any ref.
+        exportImage: (fmt) => renderSequenceExport(fmt, aiLatest.current.seq, aiLatest.current.docName),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (the assistant's `rearrange_annotations` tool /
+        // the editor's "Arrange comments" action). Pure cosmetic model edit —
+        // the renderer re-derives each callout box from its target every frame.
+        rearrangeAnnotations: () => {
+          const { seq: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
 
   /* ---- global pointer + key handling (attached once) ---------------------- */
   const handleMove = (e: PointerEvent) => {

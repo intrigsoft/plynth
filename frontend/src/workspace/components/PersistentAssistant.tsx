@@ -4,12 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/session';
 import { editorBridge } from '../../editors/editor-bridge';
 import type { ExportFormat } from '../../editors/engine';
-import {
-  diffErdChanges,
-  erdApplyChangesSchema,
-  summarizeErdChanges,
-  type ErdChange,
-} from '../../editors/erd/ai-ops';
+import { AI_OPS, type AiOpsEntry } from '../../editors/ai-registry';
 
 /**
  * The single, application-wide DioscHub assistant.
@@ -87,28 +82,34 @@ const MUTATING_TOOL = /(?:^|[_.])(create|update|delete|add|remove)(?:[_.]|$)/i;
  * micro-ops: the LLM reasons through the whole change set and sends an ordered
  * list of typed edits, which the live editor validates + applies atomically.
  * Gated by a client-side approval card (Responsibility-First) so the user
- * reviews the structured diff before the AI touches their diagram. The intent
- * is only advertised while an ERD editor is open (see the adapter's `intents`
- * getter), so the LLM never sees a tool that can't apply to the current page.
+ * reviews the structured diff before the AI touches their diagram.
+ *
+ * Built per open editor from its `AiOpsEntry` (schema + summary/diff come from
+ * the ai-registry; the live `applyChanges` runs through the editor bridge), so
+ * the LLM only ever sees the ops that apply to the diagram on screen.
  */
-const ERD_APPLY_CHANGES_INTENT = {
-  name: 'apply_changes',
-  description:
-    'Apply a batch of edits to the ERD diagram currently open on screen. Send an ordered list of changes (add/rename/remove tables, add/remove columns, add/remove relationships, set_header to position the title block and set its metadata, or add_annotation to pin a callout note to a table or relationship); tables are referenced by name. The whole batch is validated and applied atomically, and shown to the user for approval first. Call browser_read_page to see the current tables before editing.',
-  schema: erdApplyChangesSchema,
-  approval: {
-    severity: 'medium' as const,
-    summary: (args: { changes?: ErdChange[] }) => summarizeErdChanges(args?.changes ?? []),
-    diff: (args: { changes?: ErdChange[] }) => diffErdChanges(args?.changes ?? []),
-  },
-  handler: async (args: { changes?: ErdChange[] }) => {
-    const handle = editorBridge.get();
-    if (handle?.type !== 'erd') {
-      return { success: false, error: 'No ERD diagram is open. Ask the user to open an ERD document, then retry.' };
-    }
-    return handle.applyChanges(args?.changes ?? []);
-  },
-};
+function makeApplyChangesIntent(entry: AiOpsEntry) {
+  return {
+    name: 'apply_changes',
+    description:
+      `Apply a batch of edits to the ${entry.label} currently open on screen. Send an ordered list of typed changes ` +
+      `(${entry.opsHint}); elements are referenced by name. The whole batch is validated and applied atomically, and ` +
+      `shown to the user for approval first. Call browser_read_page to see the current diagram before editing.`,
+    schema: entry.schema,
+    approval: {
+      severity: 'medium' as const,
+      summary: (args: { changes?: unknown[] }) => entry.summarize(args?.changes ?? []),
+      diff: (args: { changes?: unknown[] }) => entry.diff(args?.changes ?? []),
+    },
+    handler: async (args: { changes?: unknown[] }) => {
+      const handle = editorBridge.get();
+      if (!handle?.applyChanges) {
+        return { success: false, error: 'No editable diagram is open. Ask the user to open a diagram, then retry.' };
+      }
+      return handle.applyChanges(args?.changes ?? []);
+    },
+  };
+}
 
 /**
  * Export the open diagram as a downloadable file delivered into the chat.
@@ -123,7 +124,7 @@ const ERD_APPLY_CHANGES_INTENT = {
 const EXPORT_DIAGRAM_INTENT = {
   name: 'export_diagram',
   description:
-    'Export the ERD diagram currently open on screen as a downloadable file and deliver it into the chat as a download chip. Formats: "png" (default), "jpg", "svg", "xml". Use this when the user asks to download, save, or get an image/picture/file of the diagram.',
+    'Export the diagram currently open on screen as a downloadable file and deliver it into the chat as a download chip. Formats: "png" (default), "jpg", "svg", "xml". Use this when the user asks to download, save, or get an image/picture/file of the diagram.',
   schema: {
     type: 'object',
     properties: {
@@ -136,8 +137,8 @@ const EXPORT_DIAGRAM_INTENT = {
   },
   handler: async (args: { format?: ExportFormat }) => {
     const handle = editorBridge.get();
-    if (handle?.type !== 'erd' || !handle.exportImage) {
-      return { success: false, error: 'No ERD diagram is open. Ask the user to open an ERD document, then retry.' };
+    if (!handle?.exportImage) {
+      return { success: false, error: 'No diagram is open to export. Ask the user to open a diagram, then retry.' };
     }
     const fmt: ExportFormat = args?.format ?? 'png';
     try {
@@ -147,6 +148,29 @@ const EXPORT_DIAGRAM_INTENT = {
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Export failed' };
     }
+  },
+};
+
+/**
+ * Tidy the open diagram's callout notes.
+ *
+ * Drops every manually-dragged note offset so the notes re-flow to their clean
+ * auto-placed positions (mirrors the editor's "Arrange comments" action). It
+ * only repositions notes — never their text, targets, or any diagram data — and
+ * a drag instantly restores a custom position, so it carries no approval card.
+ * Host-executed, so no server refetch (see the `browser_` skip in tool:completed).
+ */
+const REARRANGE_ANNOTATIONS_INTENT = {
+  name: 'rearrange_annotations',
+  description:
+    'Tidy the callout notes on the diagram currently open on screen: re-flow every note to a clean auto-placed position next to the element it is pinned to, clearing any positions the user dragged by hand. Use when the user asks to tidy / clean up / re-arrange / auto-layout the notes or comments. Only moves notes — it never changes their text or the diagram itself.',
+  schema: { type: 'object', properties: {} },
+  handler: async () => {
+    const handle = editorBridge.get();
+    if (!handle?.rearrangeAnnotations) {
+      return { success: false, error: 'No diagram is open. Ask the user to open a diagram, then retry.' };
+    }
+    return handle.rearrangeAnnotations();
   },
 };
 
@@ -164,7 +188,17 @@ const diagramAdapter = {
     return { ...base, description: `Open ${data.type} diagram "${data.docName}".`, data };
   },
   get intents() {
-    return editorBridge.get()?.type === 'erd' ? [ERD_APPLY_CHANGES_INTENT, EXPORT_DIAGRAM_INTENT] : [];
+    // Advertise only what the open editor actually supports: its typed
+    // apply_changes (from the ai-registry, keyed by diagram type) plus any
+    // capability the registered bridge handle exposes (export / rearrange).
+    const handle = editorBridge.get();
+    if (!handle) return [];
+    const intents: object[] = [];
+    const entry = AI_OPS[handle.type];
+    if (entry) intents.push(makeApplyChangesIntent(entry));
+    if (handle.exportImage) intents.push(EXPORT_DIAGRAM_INTENT);
+    if (handle.rearrangeAnnotations) intents.push(REARRANGE_ANNOTATIONS_INTENT);
+    return intents;
   },
 };
 

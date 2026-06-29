@@ -7,11 +7,11 @@ import {
   escAttr,
   escText,
   NS,
-  rasterize,
-  slugify,
+  renderDiagramFile,
   type ExportFormat,
   type Rect,
 } from '../engine';
+import type { RenderedDiagramFile } from '../editor-bridge';
 import { actorPath, ellipsePath } from './markers';
 import { KIND_COLOR, rtypeOf, type UseCaseModel } from './model';
 
@@ -114,11 +114,27 @@ export function buildUseCaseXml(uc: UseCaseModel, geom: Map<string, Rect>): stri
   return out.join('\n');
 }
 
+/**
+ * Render the diagram to a downloadable file WITHOUT touching the DOM: returns a
+ * `data:` URL for png/jpg and raw markup for svg/xml. This is the headless half
+ * of export — `runUseCaseExport` wraps it for the menu's local download, and the
+ * assistant's `export_diagram` intent hands the result to the kit to upload and
+ * surface as a chat download chip.
+ */
+export async function renderUseCaseExport(
+  fmt: ExportFormat,
+  uc: UseCaseModel,
+  geom: Map<string, Rect>,
+  docName: string,
+): Promise<RenderedDiagramFile> {
+  return renderDiagramFile(fmt, docName, {
+    svg: () => buildUseCaseSvg(uc, geom),
+    xml: () => buildUseCaseXml(uc, geom),
+  });
+}
+
 export async function runUseCaseExport(fmt: ExportFormat, uc: UseCaseModel, geom: Map<string, Rect>, docName: string): Promise<void> {
-  const name = slugify(docName);
-  if (fmt === 'xml') return download(`${name}.xml`, buildUseCaseXml(uc, geom), 'application/xml');
-  const { svg, w, h } = buildUseCaseSvg(uc, geom);
-  if (fmt === 'svg') return download(`${name}.svg`, svg, 'image/svg+xml');
-  const url = await rasterize(svg, { scale: 2.5, jpeg: fmt === 'jpg', bg: '#ffffff', width: w, height: h });
-  downloadDataUrl(`${name}.${fmt}`, url);
+  const file = await renderUseCaseExport(fmt, uc, geom, docName);
+  if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
+  download(file.filename, file.content, file.mimeType);
 }

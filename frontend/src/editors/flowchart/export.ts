@@ -7,12 +7,12 @@ import {
   escText,
   NS,
   perp,
-  rasterize,
   rectEdge,
-  slugify,
+  renderDiagramFile,
   type ExportFormat,
   type Rect,
 } from '../engine';
+import type { RenderedDiagramFile } from '../editor-bridge';
 import { KINDS, poolBounds, type FlowchartModel, type FlowGeom } from './model';
 import { shapePath } from './shapes';
 
@@ -120,11 +120,27 @@ export function buildFlowchartXml(model: FlowchartModel): string {
   return out.join('\n');
 }
 
+/**
+ * Render the diagram to a downloadable file WITHOUT touching the DOM: a `data:`
+ * URL for png/jpg and raw markup for svg/xml. This is the headless half of
+ * export — `runFlowchartExport` wraps it for the menu's local download, and the
+ * assistant's `export_diagram` intent hands the result to the kit to upload and
+ * surface as a chat download chip.
+ */
+export async function renderFlowchartExport(
+  fmt: ExportFormat,
+  fc: FlowchartModel,
+  geom: Map<string, FlowGeom>,
+  docName: string,
+): Promise<RenderedDiagramFile> {
+  return renderDiagramFile(fmt, docName, {
+    svg: () => buildFlowchartSvg(fc, geom),
+    xml: () => buildFlowchartXml(fc),
+  });
+}
+
 export async function runFlowchartExport(fmt: ExportFormat, model: FlowchartModel, geom: Map<string, FlowGeom>, docName: string): Promise<void> {
-  const name = slugify(docName);
-  if (fmt === 'xml') return download(`${name}.xml`, buildFlowchartXml(model), 'application/xml');
-  const { svg, w, h } = buildFlowchartSvg(model, geom);
-  if (fmt === 'svg') return download(`${name}.svg`, svg, 'image/svg+xml');
-  const url = await rasterize(svg, { scale: 2.5, jpeg: fmt === 'jpg', bg: '#ffffff', width: w, height: h });
-  downloadDataUrl(`${name}.${fmt}`, url);
+  const file = await renderFlowchartExport(fmt, model, geom, docName);
+  if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
+  download(file.filename, file.content, file.mimeType);
 }

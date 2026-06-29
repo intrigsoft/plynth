@@ -46,6 +46,11 @@ export interface DiagramCommandHandle {
    *  that support export implement it; an intent must feature-detect it. The
    *  same geometry/SVG pipeline the document menu's export button uses. */
   exportImage?(fmt: ExportFormat): Promise<RenderedDiagramFile>;
+  /** Tidy the diagram's callout notes: drop every manually-dragged offset so the
+   *  notes re-flow to their clean auto-placed positions (same effect as the
+   *  editor's "Arrange comments" action). Optional — an intent feature-detects
+   *  it. `data` reports how many notes were re-arranged. */
+  rearrangeAnnotations?(): CommandResult;
 }
 
 let current: DiagramCommandHandle | null = null;

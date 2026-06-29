@@ -30,6 +30,8 @@ import {
 } from '../engine';
 import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
+import { editorBridge } from '../editor-bridge';
+import { applyClassChanges, classReadSnapshot, type ClassChange } from './ai-ops';
 import {
   asClass,
   measureClass,
@@ -42,7 +44,7 @@ import {
   type RelType,
 } from './model';
 import { ClassMarkers } from './markers';
-import { runClassExport } from './export';
+import { renderClassExport, runClassExport } from './export';
 
 const ACCENT = '#3a5bff';
 
@@ -88,6 +90,57 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
     return m;
   }, [cls.classes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
+
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
+   * registers a handle the root-level adapter calls; a `latest` ref keeps the
+   * handle reading the current model without re-registering on every keystroke. */
+  const aiLatest = useRef({ cls, geom, onModel, docName, projectName });
+  aiLatest.current = { cls, geom, onModel, docName, projectName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'class',
+        read: () => classReadSnapshot(aiLatest.current.cls, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyClassChanges(aiLatest.current.cls, changes as ClassChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent — same
+        // geometry/SVG pipeline the document menu's export button uses, read from
+        // the live model so the exported image matches what's on screen.
+        exportImage: (fmt) =>
+          renderClassExport(
+            fmt,
+            aiLatest.current.cls,
+            aiLatest.current.geom,
+            aiLatest.current.docName,
+            aiLatest.current.projectName,
+          ),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (the assistant's `rearrange_annotations` tool /
+        // the editor's "Arrange comments" action). Pure cosmetic model edit —
+        // the renderer re-derives each callout box from its target every frame.
+        rearrangeAnnotations: () => {
+          const { cls: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
+
   const frameRectOf = useCallback((id: string) => {
     const f = cls.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;

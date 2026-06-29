@@ -24,6 +24,8 @@ import {
 } from '../engine';
 import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
+import { editorBridge } from '../editor-bridge';
+import { applyUseCaseChanges, useCaseReadSnapshot, type UseCaseChange } from './ai-ops';
 import {
   asUseCase,
   defaultRelType,
@@ -42,7 +44,7 @@ import {
   type UseCaseRel,
 } from './model';
 import { actorPath, ellipsePath, KindGlyph, relMarkerEnd, SystemGlyph, UcDefs } from './markers';
-import { runUseCaseExport } from './export';
+import { renderUseCaseExport, runUseCaseExport } from './export';
 
 const ACCENT = '#0891b2';
 const SYS_MIN_W = 180;
@@ -79,6 +81,50 @@ export function UseCaseEditor({ model, onModel, docName, description, exportApi 
     return m;
   }, [uc.nodes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
+
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
+   * registers a handle the root-level adapter calls; a `latest` ref keeps the
+   * handle reading the current model without re-registering on every keystroke. */
+  const aiLatest = useRef({ uc, geom, onModel, docName });
+  aiLatest.current = { uc, geom, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'usecase',
+        read: () => useCaseReadSnapshot(aiLatest.current.uc, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyUseCaseChanges(aiLatest.current.uc, changes as UseCaseChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent — uses the
+        // live model + geometry (same `geom` the render path builds), so the
+        // exported image matches what's on screen without reading any DOM ref.
+        exportImage: (fmt) =>
+          renderUseCaseExport(fmt, aiLatest.current.uc, aiLatest.current.geom, aiLatest.current.docName),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (the assistant's `rearrange_annotations` tool /
+        // the editor's "Arrange comments" action). Pure cosmetic model edit.
+        rearrangeAnnotations: () => {
+          const { uc: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
+
   const hitNode = useCallback((wx: number, wy: number, exclude?: string) => {
     for (let i = uc.nodes.length - 1; i >= 0; i--) {
       const n = uc.nodes[i];

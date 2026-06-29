@@ -28,6 +28,8 @@ import {
 import { FRAME_ORDER, FRAME_TYPES } from '../engine';
 import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
+import { editorBridge } from '../editor-bridge';
+import { applyComponentChanges, componentReadSnapshot, type ComponentChange } from './ai-ops';
 import {
   asComponent,
   connMarkers,
@@ -44,7 +46,7 @@ import {
   type RelType,
 } from './model';
 import { CompDefs, ComponentGlyph, FrameGlyph, KindIcon } from './markers';
-import { runComponentExport } from './export';
+import { renderComponentExport, runComponentExport } from './export';
 
 const ACCENT = '#4f46e5';
 const REL_TYPES: RelType[] = ['assembly', 'dependency', 'delegation', 'composition'];
@@ -207,6 +209,48 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
     exportApi.current = (fmt: ExportFormat) => runComponentExport(fmt, cm, geom, docName);
     return () => { exportApi.current = null; };
   }, [cm, geom, docName, exportApi]);
+
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
+   * registers a handle the root-level adapter calls; a `latest` ref keeps the
+   * handle reading the current model/geometry without re-registering on every
+   * keystroke. */
+  const aiLatest = useRef({ cm, geom, onModel, docName });
+  aiLatest.current = { cm, geom, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'component',
+        read: () => componentReadSnapshot(aiLatest.current.cm, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyComponentChanges(aiLatest.current.cm, changes as ComponentChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent. Uses the
+        // same live geometry the on-screen render uses, so the image matches.
+        exportImage: (fmt) =>
+          renderComponentExport(fmt, aiLatest.current.cm, aiLatest.current.geom, aiLatest.current.docName),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (same effect as the editor's "Arrange comments").
+        rearrangeAnnotations: () => {
+          const { cm: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
 
   /* inline edit */
   const beginEdit = (id: number, field: 'name' | number) => {

@@ -44,7 +44,9 @@ import {
   type RelType,
 } from './model';
 import { cylinderPath, DpArrowDefs, FRAME_ICON, relDash, relMarkerEnd } from './markers';
-import { runDeploymentExport } from './export';
+import { renderDeploymentExport, runDeploymentExport } from './export';
+import { editorBridge } from '../editor-bridge';
+import { applyDeploymentChanges, deploymentReadSnapshot, type DeploymentChange } from './ai-ops';
 
 const ACCENT = '#c2410c';
 const FRAME_BLUE = '#3a5bff';
@@ -224,6 +226,48 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
     });
     setTimeout(fitAll, 30);
   }, [dep, geom, patch, fitAll]);
+
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors ERD: the open editor registers
+   * a handle the root-level adapter calls; a `latest` ref keeps the handle
+   * reading the current model/geometry without re-registering on every keystroke. */
+  const aiLatest = useRef({ dep, geom, onModel, docName });
+  aiLatest.current = { dep, geom, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'deployment',
+        read: () => deploymentReadSnapshot(aiLatest.current.dep, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyDeploymentChanges(aiLatest.current.dep, changes as DeploymentChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent — uses the
+        // same live geometry the on-screen render uses, so the image matches.
+        exportImage: (fmt) =>
+          renderDeploymentExport(fmt, aiLatest.current.dep, aiLatest.current.geom, aiLatest.current.docName),
+        // Drop every manually-dragged note offset so callouts re-flow to their
+        // clean auto-placed positions (assistant's `rearrange_annotations` /
+        // the editor's "Arrange comments" action). Pure cosmetic model edit.
+        rearrangeAnnotations: () => {
+          const { dep: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
 
   /* export */
   useEffect(() => {

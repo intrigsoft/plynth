@@ -26,6 +26,8 @@ import {
 } from '../engine';
 import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
+import { editorBridge } from '../editor-bridge';
+import { applyFlowchartChanges, flowchartReadSnapshot, type FlowchartChange } from './ai-ops';
 import {
   asFlowchart,
   DEFNAME,
@@ -44,9 +46,21 @@ import {
   type FlowPool,
 } from './model';
 import { FcArrowDefs, KindGlyph, NodeShape, shapePath } from './shapes';
-import { runFlowchartExport } from './export';
+import { renderFlowchartExport, runFlowchartExport } from './export';
 
 const ACCENT = '#15803d';
+
+/** Layout geometry (position + measured size per node) for a model. Shared by the
+ *  live render `useMemo` and the headless export path (assistant `export_diagram`),
+ *  so an exported image matches what's on screen. */
+function buildFlowchartGeom(fc: FlowchartModel): Map<string, FlowGeom> {
+  const m = new Map<string, FlowGeom>();
+  for (const n of fc.nodes) {
+    const sz = measureNode(n);
+    m.set(String(n.id), { x: n.x, y: n.y, w: sz.w, h: sz.h, shape: sz.shape });
+  }
+  return m;
+}
 
 type PoolDrag =
   | { t: 'pool-move'; sx: number; sy: number; ox: number; oy: number; nodes: Record<number, { ox: number; oy: number }>; moved: boolean }
@@ -86,15 +100,52 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     onModelRef.current({ ...cur, ...fn(cur) } as DiagramModel);
   }, []);
 
+  /* expose an imperative AI command handle for the persistent assistant's browser
+   * adapter (see editor-bridge). Mirrors `exportApi`: the open editor registers a
+   * handle the root-level adapter calls; a `latest` ref keeps the handle reading
+   * the current model without re-registering on every keystroke. */
+  const aiLatest = useRef({ fc, onModel, docName });
+  aiLatest.current = { fc, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'flowchart',
+        read: () => flowchartReadSnapshot(aiLatest.current.fc, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyFlowchartChanges(aiLatest.current.fc, changes as FlowchartChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent. Recomputes
+        // geometry from the live model (same `buildFlowchartGeom` the render
+        // `useMemo` uses), so the exported image matches what's on screen.
+        exportImage: (fmt) =>
+          renderFlowchartExport(fmt, aiLatest.current.fc, buildFlowchartGeom(aiLatest.current.fc), aiLatest.current.docName),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (the assistant's `rearrange_annotations` tool / the
+        // editor's "Arrange comments" action). Pure cosmetic model edit — the
+        // renderer re-derives each callout box from its target every frame.
+        rearrangeAnnotations: () => {
+          const { fc: cur, onModel: setModel } = aiLatest.current;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
+
   /* geometry */
-  const geom = useMemo(() => {
-    const m = new Map<string, FlowGeom>();
-    for (const n of fc.nodes) {
-      const sz = measureNode(n);
-      m.set(String(n.id), { x: n.x, y: n.y, w: sz.w, h: sz.h, shape: sz.shape });
-    }
-    return m;
-  }, [fc.nodes]);
+  const geom = useMemo(() => buildFlowchartGeom(fc), [fc.nodes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
   const hitNode = useCallback(
     (wx: number, wy: number, exclude?: string) => {

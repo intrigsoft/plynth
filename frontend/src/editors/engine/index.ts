@@ -3,6 +3,7 @@ export * from './editable-label';
 export * from './frames';
 export * from './doc-header';
 export * from './annotations';
+export * from './ai-shared';
 export * from './export';
 export * from './elk';
 export * from './useViewport';
