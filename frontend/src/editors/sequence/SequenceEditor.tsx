@@ -887,6 +887,7 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
       palette={paletteRail}
       onFit={fitView}
       onAutoLayout={tidy}
+      onArrangeComments={ann.views.length ? ann.rearrange : undefined}
       cursor={cursor}
       onCanvasPointerDown={(e) => { commitEdit(); if (!panMode) setSel(null); ann.clear(); header.setSelected(false); vp.beginPan(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createLife({ name: 'Participant', x: w.x, select: true }); beginEdit({ kind: 'lifeline', id }); }}

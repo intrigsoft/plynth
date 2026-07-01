@@ -566,7 +566,7 @@ export function UseCaseEditor({ model, onModel, docName, description, exportApi 
   return (
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
-      onFit={fitAll} onAutoLayout={() => void autoLayout()}
+      onFit={fitAll} onAutoLayout={() => void autoLayout()} onArrangeComments={ann.views.length ? ann.rearrange : undefined}
       onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (sysEdit) commitSysRename(); if (relEdit) commitRelLabel(); ann.clear(); setSelSys(false); header.setSelected(false); bc.bgDown(e); }}
       world={
         <>

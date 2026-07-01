@@ -327,6 +327,9 @@ export interface AnnotationsApi {
   createFromTarget: (targetId: string, ev: ReactPointerEvent) => void;
   /** Commit any open edit + clear selection — call from the canvas background pointer-down. */
   clear: () => void;
+  /** Drop every manual drag-offset so all notes re-flow into the gutter (the
+   *  "Arrange comments in the margins" toolbar action). No-op when nothing was dragged. */
+  rearrange: () => void;
   /** The leaders + cards + inline editor, ready to drop into the editor's `world`. */
   layer: ReactNode;
 }
@@ -426,6 +429,9 @@ export function useAnnotations(opts: {
     drag.current = { id, swx: w.x, swy: w.y, odx, ody, moved: false, isNew: true };
   };
   const clear = () => { if (edit) commitEdit(); setSelected(null); };
+  // Drop every manual offset so notes re-flow into the gutter (matches the
+  // assistant's rearrange + the design's "Arrange comments" button).
+  const rearrange = () => setAnnotations((as) => as.map(({ offset, ...rest }) => rest));
 
   // keyboard delete of the selected note (editor engines only delete their own kinds).
   useEffect(() => {
@@ -496,5 +502,5 @@ export function useAnnotations(opts: {
     </>
   );
 
-  return { views, selected, setSelected, createFromTarget, clear, layer };
+  return { views, selected, setSelected, createFromTarget, clear, rearrange, layer };
 }

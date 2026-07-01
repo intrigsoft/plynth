@@ -850,6 +850,7 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
       palette={palette}
       onFit={fitAll}
       onAutoLayout={() => void autoLayout()}
+      onArrangeComments={ann.views.length ? ann.rearrange : undefined}
       onCanvasPointerDown={(e) => {
         if (edit) commitEdit();
         if (relEdit) commitRelLabel();

@@ -10,6 +10,7 @@ export function EditorShell({
   palette,
   onFit,
   onAutoLayout,
+  onArrangeComments,
   onCanvasPointerDown,
   onCanvasDoubleClick,
   cursor,
@@ -23,6 +24,7 @@ export function EditorShell({
   palette: ReactNode;
   onFit: () => void;
   onAutoLayout?: () => void;
+  onArrangeComments?: () => void;
   onCanvasPointerDown?: (e: PointerEvent) => void;
   onCanvasDoubleClick?: (e: RMouseEvent) => void;
   cursor?: string;
@@ -59,7 +61,7 @@ export function EditorShell({
         </div>
         {/* screen-space overlays */}
         {hud}
-        <ZoomCluster pct={Math.round(vp.scale * 100)} onIn={() => vp.zoomBy(1.2)} onOut={() => vp.zoomBy(1 / 1.2)} onFit={onFit} onAutoLayout={onAutoLayout} accent={accent} />
+        <ZoomCluster pct={Math.round(vp.scale * 100)} onIn={() => vp.zoomBy(1.2)} onOut={() => vp.zoomBy(1 / 1.2)} onFit={onFit} onAutoLayout={onAutoLayout} onArrangeComments={onArrangeComments} accent={accent} />
         <DioschubBadge />
       </div>
     </div>
