@@ -13,9 +13,10 @@
  *  BESPOKE geometry: lifelines are positioned by `x` only (left→right reading
  *  order) and messages are ordered geometrically by `y` (top→bottom). A new
  *  lifeline lands to the right of the rightmost one; a new message is appended
- *  BELOW the lowest existing one, so it reads last in the sequence. Activations
- *  and interaction fragments are geometric/manual surfaces and are NOT
- *  AI-editable in v1.
+ *  BELOW the lowest existing one, so it reads last in the sequence. Activation
+ *  bars (execution/liveness) are AI-editable via `add_activation`, keyed by the
+ *  two messages that bound them (never by pixels). Interaction fragments
+ *  (frames) remain a geometric/manual surface, not AI-editable in v1.
  *
  *  This module is pure (no React, no DOM): the live editor calls
  *  `applySequenceChanges` through the editor bridge; the assistant adapter uses
@@ -50,6 +51,7 @@ export type SequenceChange =
   | { op: 'remove_lifeline'; name: string }
   | { op: 'add_message'; from: string; to: string; name: string; kind?: MessageKind }
   | { op: 'remove_message'; name: string; from?: string; to?: string }
+  | { op: 'add_activation'; lifeline: string; fromMessage: string; toMessage: string }
   | SharedChange;
 
 export type ApplyResult =
@@ -65,6 +67,8 @@ const LIFELINE_GAP = 210;
 const LIFELINE_START_X = 90;
 /** Vertical step below the lowest message for a freshly-appended one. */
 const MESSAGE_STEP = 48;
+/** Minimum height for an activation bar (mirrors the editor's drag threshold). */
+const ACTIVATION_MIN_H = 14;
 
 /* ---- read snapshot (what `browser_read_page` surfaces to the LLM) -------- */
 
@@ -127,6 +131,17 @@ export function applySequenceChanges(model: SequenceModel, changes: SequenceChan
     if (hits.length === 0) return { error: `lifeline "${name}" not found` as const };
     if (hits.length > 1) return { error: `lifeline name "${name}" is ambiguous` as const };
     return { life: hits[0] };
+  };
+
+  // Resolve a message by name against the WORKING set (so an activation can
+  // reference a message added earlier in the same batch). Names are usually
+  // unique in a sequence; ambiguity is a hard error rather than a guess.
+  const findMessage = (name: string) => {
+    const q = (name ?? '').trim().toLowerCase();
+    const hits = messages.filter((m) => m.name.trim().toLowerCase() === q);
+    if (hits.length === 0) return { error: `message "${name}" not found` as const };
+    if (hits.length > 1) return { error: `message name "${name}" is ambiguous — rename it or reorder so it's unique` as const };
+    return { msg: hits[0] };
   };
 
   for (let i = 0; i < changes.length; i++) {
@@ -231,6 +246,22 @@ export function applySequenceChanges(model: SequenceModel, changes: SequenceChan
         if (messages.length === before) return fail(`${at}: no matching message "${ch.name}" found`);
         break;
       }
+      case 'add_activation': {
+        const life = findLife(ch.lifeline);
+        if ('error' in life) return fail(`${at}: ${life.error}`);
+        const fromM = findMessage(ch.fromMessage);
+        if ('error' in fromM) return fail(`${at}: ${fromM.error}`);
+        const toM = findMessage(ch.toMessage);
+        if ('error' in toM) return fail(`${at}: ${toM.error}`);
+        // The bar spans from the activating message down to the closing one; the
+        // caller need not order them (min/max), and never passes pixels.
+        const top = Math.min(fromM.msg.y, toM.msg.y);
+        const bottom = Math.max(fromM.msg.y, toM.msg.y);
+        if (bottom - top < ACTIVATION_MIN_H)
+          return fail(`${at}: "${ch.fromMessage}" and "${ch.toMessage}" are the same or too close to span an activation`);
+        activations.push({ id: 'act' + ++idc, lifelineId: life.life.id, top, bottom });
+        break;
+      }
       default:
         return fail(`${at}: unknown operation`);
     }
@@ -252,6 +283,7 @@ const OP_LABEL: Record<SequenceChange['op'], string> = {
   remove_lifeline: 'remove lifeline',
   add_message: 'add message',
   remove_message: 'remove message',
+  add_activation: 'add activation',
   ...SHARED_OP_LABEL,
 };
 
@@ -290,6 +322,9 @@ export function diffSequenceChanges(changes: SequenceChange[]): Array<{ field: s
           next: 'removed',
         });
         break;
+      case 'add_activation':
+        rows.push({ field: `activation on ${ch.lifeline}`, current: '—', next: `${ch.fromMessage} → ${ch.toMessage}` });
+        break;
     }
   }
   return rows;
@@ -308,7 +343,7 @@ export const sequenceApplyChangesSchema = {
       type: 'array',
       minItems: 1,
       description:
-        'Ordered list of edits, applied atomically (all-or-nothing) to the open sequence diagram. Lifelines are referenced by name. Messages are appended below the lowest existing one (they read top-to-bottom in sequence order). Call browser_read_page first to learn the current lifeline names and the message order.',
+        'Ordered list of edits, applied atomically (all-or-nothing) to the open sequence diagram. Lifelines are referenced by name. Messages are appended below the lowest existing one (they read top-to-bottom in sequence order). When you lay out an interaction, ALSO add activation bars (execution/liveness) so the diagram is complete: for each participant that handles a call, add one add_activation spanning from the message that activates it (the incoming call) to the message that ends its work (its reply, or its last outgoing call). Add these after the messages they reference. Call browser_read_page first to learn the current lifeline names and the message order.',
       items: {
         oneOf: [
           {
@@ -361,6 +396,17 @@ export const sequenceApplyChangesSchema = {
               name: { type: 'string', description: 'Message label to remove' },
               from: { type: 'string', description: 'Optional sender to narrow the match' },
               to: { type: 'string', description: 'Optional receiver to narrow the match' },
+            },
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['op', 'lifeline', 'fromMessage', 'toMessage'],
+            properties: {
+              op: { const: 'add_activation' },
+              lifeline: { type: 'string', description: 'Lifeline the activation (execution/liveness) bar sits on — usually the receiver of fromMessage' },
+              fromMessage: { type: 'string', description: 'Name of the message that activates it (the incoming call). The bar starts here.' },
+              toMessage: { type: 'string', description: "Name of the message that ends its work (its reply, or its last outgoing call). The bar ends here. Must differ from fromMessage." },
             },
           },
           ...sharedChangeSchemas('a lifeline name'),
