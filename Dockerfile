@@ -11,6 +11,18 @@ COPY backend/package.json backend/
 COPY frontend/package.json frontend/
 RUN npm ci
 
+# DioscHub embed config for the frontend. Vite inlines `import.meta.env.VITE_*`
+# at BUILD time, so these must be present before `npm run build`. Railway passes
+# service variables to the Docker build as args — declare them here so the SPA
+# bundle is baked with the hub URL, embed key and assistant id. Without this the
+# widget renders "Assistant not configured".
+ARG VITE_DIOSC_HUB_URL
+ARG VITE_DIOSC_EMBED_KEY
+ARG VITE_DIOSC_ASSISTANT_ID
+ENV VITE_DIOSC_HUB_URL=$VITE_DIOSC_HUB_URL \
+    VITE_DIOSC_EMBED_KEY=$VITE_DIOSC_EMBED_KEY \
+    VITE_DIOSC_ASSISTANT_ID=$VITE_DIOSC_ASSISTANT_ID
+
 # Build shared → backend → frontend (frontend/dist is served by the backend)
 COPY . .
 RUN npm run build
