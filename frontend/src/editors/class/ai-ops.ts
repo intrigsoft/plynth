@@ -491,7 +491,18 @@ export const classApplyChangesSchema = {
               op: { const: 'add_relationship' },
               from: { type: 'string', description: 'Class the relationship starts at' },
               to: { type: 'string', description: 'Class the relationship points to' },
-              type: { enum: [...REL_TYPES], description: 'Relationship kind' },
+              type: {
+                enum: [...REL_TYPES],
+                description:
+                  'UML relationship kind (sets the line style + arrowhead): ' +
+                  'association (solid line, open arrow); ' +
+                  'dependency (DASHED line, open arrow — a uses/depends-on link); ' +
+                  'generalization (solid line, hollow triangle — inheritance/extends); ' +
+                  'realization (DASHED line, hollow triangle — implements an interface); ' +
+                  'aggregation (solid line, hollow diamond); ' +
+                  'composition (solid line, filled diamond). ' +
+                  'Use dependency or realization when you want a dashed line.',
+              },
               fromMult: { type: 'string', description: `${MULT_DESC} at the "from" end` },
               toMult: { type: 'string', description: `${MULT_DESC} at the "to" end` },
               label: { type: 'string' },

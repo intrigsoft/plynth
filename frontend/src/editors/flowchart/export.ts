@@ -76,7 +76,7 @@ export function buildFlowchartSvg(model: FlowchartModel, geom: Map<string, FlowG
     if (!a || !c) continue;
     const p1 = rectEdge(a, center(c).x, center(c).y);
     const p2 = rectEdge(c, center(a).x, center(a).y);
-    out.push(`<path d="M${p1.x} ${p1.y} L${p2.x} ${p2.y}" stroke="#2a3344" stroke-width="1.6" fill="none" marker-end="url(#fc-arrow)"/>`);
+    out.push(`<path d="M${p1.x} ${p1.y} L${p2.x} ${p2.y}" stroke="#2a3344" stroke-width="1.6" fill="none"${r.dashed ? ' stroke-dasharray="6 5"' : ''} marker-end="url(#fc-arrow)"/>`);
     if (r.label) {
       const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
       const pp = perp(p1, p2);

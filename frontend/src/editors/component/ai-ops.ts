@@ -435,7 +435,13 @@ export const componentApplyChangesSchema = {
               to: { type: 'string', description: 'Component the relationship points to' },
               type: {
                 enum: [...REL_TYPES],
-                description: "Relationship type (default 'dependency')",
+                description:
+                  'Connector type (sets the line style + marker): ' +
+                  "dependency (DASHED line, open arrow — a uses/depends-on link, the default); " +
+                  'assembly (solid line, ball-and-socket — one component provides an interface another requires); ' +
+                  'delegation (solid line, open arrow — a port wired to an internal part); ' +
+                  'composition (solid line, filled diamond). ' +
+                  'Use dependency when you want a dashed line. Default dependency.',
               },
               label: { type: 'string' },
             },
