@@ -121,10 +121,14 @@ function boxOf(ref: AnnRef, anchor: { x: number; y: number }, side: AnnSide, CW:
 
 /** Determine which side the connector lands on, snap the leader to that edge, and
  *  expose `connSide` so the card's accent bar matches. */
-function finish(box: AnnRect, anchor: { x: number; y: number }, CW: number, extra?: Partial<AnnPlacement>): AnnPlacement {
+function finish(box: AnnRect, anchor: { x: number; y: number }, CW: number, extra?: Partial<AnnPlacement> & { forceSide?: AnnSide }): AnnPlacement {
+  const { forceSide, ...rest } = extra ?? {};
   const bcx = box.x + box.w / 2, bcy = box.y + box.h / 2, ddx = anchor.x - bcx, ddy = anchor.y - bcy;
   let side: AnnSide;
-  if (Math.abs(ddx) / (box.w / 2) >= Math.abs(ddy) / (box.h / 2)) side = ddx >= 0 ? 'right' : 'left';
+  // Gutter notes force the accent bar / leader to the edge facing the diagram
+  // centre; free notes pick the side from the anchor direction.
+  if (forceSide) side = forceSide;
+  else if (Math.abs(ddx) / (box.w / 2) >= Math.abs(ddy) / (box.h / 2)) side = ddx >= 0 ? 'right' : 'left';
   else side = ddy >= 0 ? 'bottom' : 'top';
   let lx: number, ly: number;
   if (side === 'right') { lx = box.x + box.w; ly = clamp(anchor.y, box.y + 5, box.y + box.h - 5); }
@@ -134,7 +138,7 @@ function finish(box: AnnRect, anchor: { x: number; y: number }, CW: number, extr
   return {
     card: box, anchor, connSide: side, CW,
     leaderD: `M${anchor.x.toFixed(1)} ${anchor.y.toFixed(1)} L${lx.toFixed(1)} ${ly.toFixed(1)}`,
-    ...extra,
+    ...rest,
   };
 }
 
@@ -223,6 +227,7 @@ export function placeGutter(
   for (const edge of ['left', 'right'] as const) {
     const list = buckets[edge].sort((a, b) => a.cy - b.cy);
     let cursor = -Infinity;
+    const centerSide: AnnSide = edge === 'left' ? 'right' : 'left'; // bar faces diagram centre
     for (const it of list) {
       const CW = it.m.w, CH = it.m.h;
       let y = it.cy - CH / 2; if (y < cursor) y = cursor; cursor = y + CH + stackGap;
@@ -230,12 +235,13 @@ export function placeGutter(
       const box: AnnRect = { x: bx, y, w: CW, h: CH };
       const cc = { x: box.x + CW / 2, y: box.y + CH / 2 };
       const anchor = it.ref.point ? { x: it.ref.x, y: it.ref.y } : rectBorderPoint(it.ref, cc.x, cc.y);
-      out[it.an.id] = finish(box, anchor, CW, { gutter: true, edge });
+      out[it.an.id] = finish(box, anchor, CW, { gutter: true, edge, forceSide: centerSide });
     }
   }
   for (const edge of ['top', 'bottom'] as const) {
     const list = buckets[edge].sort((a, b) => a.cx - b.cx);
     let cursor = -Infinity;
+    const centerSide: AnnSide = edge === 'top' ? 'bottom' : 'top'; // bar faces diagram centre
     for (const it of list) {
       const CW = it.m.w, CH = it.m.h;
       let x = it.cx - CW / 2; if (x < cursor) x = cursor; cursor = x + CW + stackGap;
@@ -243,7 +249,7 @@ export function placeGutter(
       const box: AnnRect = { x, y: by, w: CW, h: CH };
       const cc = { x: box.x + CW / 2, y: box.y + CH / 2 };
       const anchor = it.ref.point ? { x: it.ref.x, y: it.ref.y } : rectBorderPoint(it.ref, cc.x, cc.y);
-      out[it.an.id] = finish(box, anchor, CW, { gutter: true, edge });
+      out[it.an.id] = finish(box, anchor, CW, { gutter: true, edge, forceSide: centerSide });
     }
   }
   return out;
