@@ -37,6 +37,14 @@ export interface AiOpsEntry {
   summarize: (changes: unknown[]) => string;
   /** Structured diff rows for the approval card. */
   diff: (changes: unknown[]) => DiffRow[];
+  /** Read-snapshot array field holding this diagram's mentionable named nodes
+   *  (e.g. `entities` for ERD, `lifelines` for sequence). Each item is
+   *  `{ id, name, kind? }`; the composer `@`-mention provider reads it so the
+   *  open diagram's own elements become mentionable. */
+  nodeKey: string;
+  /** Singular noun for a node — the mention `kind` (wire `@[Name](kind:id)`)
+   *  and the popover category chip, e.g. `entity`, `lifeline`. */
+  nodeKind: string;
 }
 
 /** Loose cast: each `summarize`/`diff` accepts its own editor-specific change
@@ -51,6 +59,8 @@ export const AI_OPS: Partial<Record<DiagramType, AiOpsEntry>> = {
     schema: erdApplyChangesSchema,
     summarize: erase(summarizeErdChanges),
     diff: eraseDiff(diffErdChanges),
+    nodeKey: 'entities',
+    nodeKind: 'entity',
   },
   class: {
     label: 'class diagram',
@@ -58,6 +68,8 @@ export const AI_OPS: Partial<Record<DiagramType, AiOpsEntry>> = {
     schema: classApplyChangesSchema,
     summarize: erase(summarizeClassChanges),
     diff: eraseDiff(diffClassChanges),
+    nodeKey: 'classes',
+    nodeKind: 'class',
   },
   component: {
     label: 'component diagram',
@@ -65,6 +77,8 @@ export const AI_OPS: Partial<Record<DiagramType, AiOpsEntry>> = {
     schema: componentApplyChangesSchema,
     summarize: erase(summarizeComponentChanges),
     diff: eraseDiff(diffComponentChanges),
+    nodeKey: 'components',
+    nodeKind: 'component',
   },
   deployment: {
     label: 'deployment diagram',
@@ -72,6 +86,8 @@ export const AI_OPS: Partial<Record<DiagramType, AiOpsEntry>> = {
     schema: deploymentApplyChangesSchema,
     summarize: erase(summarizeDeploymentChanges),
     diff: eraseDiff(diffDeploymentChanges),
+    nodeKey: 'nodes',
+    nodeKind: 'node',
   },
   usecase: {
     label: 'use-case diagram',
@@ -79,6 +95,8 @@ export const AI_OPS: Partial<Record<DiagramType, AiOpsEntry>> = {
     schema: useCaseApplyChangesSchema,
     summarize: erase(summarizeUseCaseChanges),
     diff: eraseDiff(diffUseCaseChanges),
+    nodeKey: 'nodes',
+    nodeKind: 'node',
   },
   sequence: {
     label: 'sequence diagram',
@@ -86,6 +104,8 @@ export const AI_OPS: Partial<Record<DiagramType, AiOpsEntry>> = {
     schema: sequenceApplyChangesSchema,
     summarize: erase(summarizeSequenceChanges),
     diff: eraseDiff(diffSequenceChanges),
+    nodeKey: 'lifelines',
+    nodeKind: 'lifeline',
   },
   flowchart: {
     label: 'flowchart',
@@ -93,5 +113,7 @@ export const AI_OPS: Partial<Record<DiagramType, AiOpsEntry>> = {
     schema: flowchartApplyChangesSchema,
     summarize: erase(summarizeFlowchartChanges),
     diff: eraseDiff(diffFlowchartChanges),
+    nodeKey: 'nodes',
+    nodeKind: 'node',
   },
 };

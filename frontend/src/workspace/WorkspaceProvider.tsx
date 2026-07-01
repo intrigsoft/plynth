@@ -9,6 +9,7 @@ import type {
   UpdateProjectDto,
 } from '@plynth/shared';
 import { api } from '../lib/api';
+import { workspaceBridge } from './workspace-bridge';
 
 interface WorkspaceCtx {
   projects: Project[];
@@ -48,6 +49,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Mirror projects into the workspace bridge so the app-wide assistant (mounted
+  // above this provider) can offer them as `@`-mentions in the composer.
+  useEffect(() => {
+    workspaceBridge.publish(projects);
+  }, [projects]);
 
   // The embedded assistant mutates this same per-device sandbox via MCP tools.
   // When it finishes a data-changing tool, PersistentAssistant fires a

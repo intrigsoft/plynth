@@ -5,6 +5,7 @@ import { useAuth } from '../../lib/session';
 import { editorBridge, waitForEditorChange } from '../../editors/editor-bridge';
 import type { ExportFormat } from '../../editors/engine';
 import { AI_OPS, type AiOpsEntry } from '../../editors/ai-registry';
+import { workspaceBridge } from '../workspace-bridge';
 
 /**
  * The single, application-wide DioscHub assistant.
@@ -175,6 +176,76 @@ const REARRANGE_ANNOTATIONS_INTENT = {
 };
 
 /**
+ * The composer `@`-mention provider (host-declared via
+ * `diosc('mentionProvider', fn)`).
+ *
+ * Offers three namespaces, read LIVE each time the popover asks (the kit calls
+ * `query(needle)` fresh per keystroke), so it always reflects current workspace
+ * + open-editor state:
+ *   - `project`   — every project (from the workspace bridge)
+ *   - `diagram`   — every document across every project
+ *   - `<nodeKind>`— the OPEN diagram's own named nodes (entities, lifelines, …),
+ *                   pulled from the live editor snapshot via the ai-registry.
+ *
+ * The host owns filtering (the kit renders whatever we return), so we match the
+ * needle here and cap the list. Wire format is `@[Name](kind:id)`; these custom
+ * kinds pass through as plain text tokens in the message (only `file:` mentions
+ * auto-attach), giving the assistant the element name + a stable id to act on.
+ */
+const MENTION_LIMIT = 40;
+
+interface MentionItem {
+  id: string;
+  name: string;
+  kind: string;
+  description?: string;
+  group?: string;
+}
+
+function queryMentions(needle: string): MentionItem[] {
+  const q = needle.trim().toLowerCase();
+  const match = (name: string) => !q || name.toLowerCase().includes(q);
+  const items: MentionItem[] = [];
+
+  // Open diagram's own nodes first — the most contextually relevant when the
+  // user is actively editing a diagram.
+  const handle = editorBridge.get();
+  if (handle) {
+    const entry = AI_OPS[handle.type];
+    if (entry) {
+      const snap = handle.read() as Record<string, unknown> & { docName?: string };
+      const nodes = snap[entry.nodeKey];
+      if (Array.isArray(nodes)) {
+        for (const n of nodes as Array<{ id?: unknown; name?: unknown; kind?: unknown }>) {
+          if (typeof n?.name !== 'string' || !match(n.name)) continue;
+          items.push({
+            id: String(n.id ?? n.name),
+            name: n.name,
+            kind: entry.nodeKind,
+            description: typeof n.kind === 'string' ? n.kind : undefined,
+            group: `In this ${entry.label}`,
+          });
+        }
+      }
+    }
+  }
+
+  const projects = workspaceBridge.get();
+  for (const p of projects) {
+    if (match(p.name)) {
+      items.push({ id: p.id, name: p.name, kind: 'project', description: p.desc || undefined, group: 'Projects' });
+    }
+    for (const d of p.docs) {
+      if (match(d.name)) {
+        items.push({ id: d.id, name: d.name, kind: 'diagram', description: `${d.type} · ${p.name}`, group: 'Diagrams' });
+      }
+    }
+  }
+
+  return items.slice(0, MENTION_LIMIT);
+}
+
+/**
  * The host's "browser MCP server": a snapshot reader plus the diagram-editing
  * intents for whatever editor is open. Registered once; `read()` and `intents`
  * consult the editor bridge live, so the assistant always sees the current page.
@@ -256,6 +327,12 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       // open diagram and edit it via the `browser_apply_changes` intent.
       diosc('browserAdapter', diagramAdapter);
       cleanups.push(() => { try { diosc('browserAdapter', null); } catch { /* noop */ } });
+
+      // Offer projects, diagrams and the open diagram's nodes as `@`-mentions in
+      // the composer. `queryMentions` reads the workspace + editor bridges live,
+      // so no re-registration is needed as data changes.
+      diosc('mentionProvider', queryMentions);
+      cleanups.push(() => { try { diosc('mentionProvider', null); } catch { /* noop */ } });
 
       const unsub = diosc('on', 'tool:completed', (data: unknown) => {
         const d = data as { success?: boolean; toolName?: string };
