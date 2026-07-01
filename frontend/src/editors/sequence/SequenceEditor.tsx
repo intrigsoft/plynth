@@ -17,6 +17,8 @@ import {
   useAnnotations,
   annHandleStyle,
   NoteIcon,
+  isTypingTarget,
+  headerEdge,
   type AnnRef,
   type HeaderPosition,
   type Tool,
@@ -446,8 +448,7 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
 
   const handleKey = (e: KeyboardEvent) => {
     if (editingRef.current) return;
-    const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
-    if (tag === 'textarea' || tag === 'input') return;
+    if (isTypingTarget(e)) return;
     if (e.key === ' ') { if (!panModeRef.current) { e.preventDefault(); setSpacePan(true); } return; }
     if (e.key === 'Escape') {
       dragRef.current = null;
@@ -607,7 +608,7 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
   const ann = useAnnotations({
     annotations: seq.annotations,
     setAnnotations: (fn) => patch({ annotations: fn(seq.annotations) }),
-    annRef, obstacles: annObstacles, accent: ACCENT, panMode,
+    annRef, obstacles: annObstacles, bounds: headerBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode,
     toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idRef.current, canvasSel: sel,
     onPanStart: (e) => vp.beginPan(e), onSelect: () => { setSel(null); header.setSelected(false); },
   });

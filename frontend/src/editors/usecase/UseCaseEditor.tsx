@@ -18,6 +18,8 @@ import {
   ellipseEdge,
   useBoxCanvas,
   useViewport,
+  isTypingTarget,
+  headerEdge,
   type ExportFormat,
   type Rect,
   type Tool,
@@ -193,7 +195,7 @@ export function UseCaseEditor({ model, onModel, docName, description, exportApi 
   const ann = useAnnotations({
     annotations: uc.annotations,
     setAnnotations: (fn) => patch({ annotations: fn(uc.annotations) }),
-    annRef, obstacles: annObstacles, accent: ACCENT, panMode: tool === 'pan',
+    annRef, obstacles: annObstacles, bounds: contentBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode: tool === 'pan',
     toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
     onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); setSelSys(false); header.setSelected(false); },
   });
@@ -205,8 +207,7 @@ export function UseCaseEditor({ model, onModel, docName, description, exportApi 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (edit || sysEdit) return;
-      const el = e.target as HTMLElement;
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (isTypingTarget(e)) return;
       if (selSys && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); removeSystem(); }
     };
     window.addEventListener('keydown', onKey);

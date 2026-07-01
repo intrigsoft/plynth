@@ -1,3 +1,4 @@
+export * from './dom';
 export * from './geometry';
 export * from './editable-label';
 export * from './frames';

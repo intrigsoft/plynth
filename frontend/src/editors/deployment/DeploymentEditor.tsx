@@ -29,7 +29,7 @@ import {
   type Rect,
   type Tool,
 } from '../engine';
-import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
+import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, headerEdge, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
 import {
   asDeployment,
@@ -196,7 +196,7 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
   const ann = useAnnotations({
     annotations: dep.annotations,
     setAnnotations: (fn) => patch({ annotations: fn(dep.annotations) }),
-    annRef, obstacles: annObstacles, accent: ACCENT, panMode: tool === 'pan',
+    annRef, obstacles: annObstacles, bounds: contentBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode: tool === 'pan',
     toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
     onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); header.setSelected(false); },
   });

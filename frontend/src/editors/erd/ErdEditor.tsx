@@ -26,6 +26,7 @@ import {
   useAnnotations,
   annHandleStyle,
   NoteIcon,
+  headerEdge,
   type AnnRef,
   type HeaderPosition,
   type ExportFormat,
@@ -224,7 +225,7 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
   const ann = useAnnotations({
     annotations: erd.annotations,
     setAnnotations: (fn) => patch({ annotations: fn(erd.annotations) }),
-    annRef, obstacles: annObstacles, accent: ACCENT, panMode: tool === 'pan',
+    annRef, obstacles: annObstacles, bounds: contentBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode: tool === 'pan',
     toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
     onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); header.setSelected(false); },
   });

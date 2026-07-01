@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as RPointerEvent } from 'react';
+import { isTypingTarget } from './dom';
 import type { Rect } from './geometry';
 import type { Tool } from './ui';
 import type { Viewport } from './useViewport';
@@ -174,8 +175,7 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
     };
     const key = (e: KeyboardEvent) => {
       if (ref.current.editing) return;
-      const el = e.target as HTMLElement;
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (isTypingTarget(e)) return;
       if (e.key === 'v' || e.key === 'V') ref.current.setTool('select');
       else if (e.key === 'h' || e.key === 'H') ref.current.setTool(ref.current.tool === 'pan' ? 'select' : 'pan');
       else if (e.key === ' ') setSpacePan(true);

@@ -20,6 +20,8 @@ import {
   rectEdge,
   useBoxCanvas,
   useViewport,
+  isTypingTarget,
+  headerEdge,
   type ExportFormat,
   type Rect,
   type Tool,
@@ -259,7 +261,7 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
   const ann = useAnnotations({
     annotations: fc.annotations,
     setAnnotations: (fn) => mutate((m) => ({ annotations: fn(m.annotations) })),
-    annRef, obstacles: annObstacles, accent: ACCENT, panMode: tool === 'pan',
+    annRef, obstacles: annObstacles, bounds: contentBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode: tool === 'pan',
     toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
     onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); setSelLane(null); header.setSelected(false); },
   });
@@ -458,8 +460,7 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
     };
     const key = (e: KeyboardEvent) => {
       if (editingRef.current) return;
-      const el = e.target as HTMLElement;
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (isTypingTarget(e)) return;
       if (!selLaneRef.current) return;
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();

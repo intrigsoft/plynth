@@ -14,6 +14,7 @@
  * `{ target, text, prefer? }` — never coordinates. */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import { isTypingTarget } from './dom';
 
 export type AnnSide = 'right' | 'bottom' | 'left' | 'top';
 export const ANN_SIDES: AnnSide[] = ['right', 'bottom', 'left', 'top'];
@@ -38,6 +39,10 @@ export interface AnnPlacement {
   leaderD: string;
   CW: number;
   manual?: boolean;
+  /** Set when the note was arranged into the diagram's outer gutter. */
+  gutter?: boolean;
+  /** Which gutter edge it landed on (only when `gutter`). */
+  edge?: AnnSide;
 }
 
 let _noteCanvas: HTMLCanvasElement | null = null;
@@ -170,6 +175,80 @@ export function placeAnnotation(an: Annotation, ref: AnnRef | null, obstacles: A
   return finish(box, anchor, CW);
 }
 
+/** Auto-arrange ALL (non-dragged) notes into the diagram's outer gutter (margins),
+ *  one per id. This is the DEFAULT placement for a note that hasn't been dragged —
+ *  dragged notes (with an `offset`) keep free placement via {@link placeAnnotation}.
+ *
+ *  - `notes`     : the notes to arrange (callers pass only the offset-less ones)
+ *  - `refOf`     : (note) -> target rect | null
+ *  - `bounds`    : diagram content bounds {x,y,w,h} (nodes/frames only, NOT notes)
+ *  - `opts.titleEdge` : 'top'|'bottom'|null — edge occupied by the title, excluded
+ *
+ *  Each note is bucketed to its nearest free edge, sorted along that edge by its
+ *  anchor projection (leaders run parallel, not crossed), then stacked just
+ *  outside the bounds with a running cursor so cards never overlap. Returns
+ *  `{ [id]: placement | null }`. Ported from the design's `placeGutter`. */
+export function placeGutter(
+  notes: Annotation[],
+  refOf: (an: Annotation) => AnnRef | null,
+  bounds: AnnRect,
+  opts?: { gap?: number; stackGap?: number; titleEdge?: 'top' | 'bottom' | null },
+): Record<string, AnnPlacement | null> {
+  const gap = opts?.gap ?? 34;
+  const stackGap = opts?.stackGap ?? 10;
+  const titleEdge = opts?.titleEdge ?? null;
+  const edges: AnnSide[] = ['left', 'right'];
+  if (titleEdge !== 'top') edges.push('top');
+  if (titleEdge !== 'bottom') edges.push('bottom');
+
+  type Item = { an: Annotation; ref: AnnRef; m: { w: number; h: number }; cx: number; cy: number };
+  const buckets: Record<AnnSide, Item[]> = { left: [], right: [], top: [], bottom: [] };
+  const out: Record<string, AnnPlacement | null> = {};
+
+  for (const an of notes) {
+    const ref = refOf(an);
+    if (!ref) { out[an.id] = null; continue; }
+    const m = noteMetrics(an.text);
+    const cx = ref.point ? ref.x : ref.x + ref.w / 2;
+    const cy = ref.point ? ref.y : ref.y + ref.h / 2;
+    const d: Record<AnnSide, number> = {
+      left: Math.abs(cx - bounds.x), right: Math.abs(bounds.x + bounds.w - cx),
+      top: Math.abs(cy - bounds.y), bottom: Math.abs(bounds.y + bounds.h - cy),
+    };
+    let edge = edges[0];
+    for (const e of edges) if (d[e] < d[edge]) edge = e;
+    buckets[edge].push({ an, ref, m, cx, cy });
+  }
+
+  for (const edge of ['left', 'right'] as const) {
+    const list = buckets[edge].sort((a, b) => a.cy - b.cy);
+    let cursor = -Infinity;
+    for (const it of list) {
+      const CW = it.m.w, CH = it.m.h;
+      let y = it.cy - CH / 2; if (y < cursor) y = cursor; cursor = y + CH + stackGap;
+      const bx = edge === 'left' ? bounds.x - gap - CW : bounds.x + bounds.w + gap;
+      const box: AnnRect = { x: bx, y, w: CW, h: CH };
+      const cc = { x: box.x + CW / 2, y: box.y + CH / 2 };
+      const anchor = it.ref.point ? { x: it.ref.x, y: it.ref.y } : rectBorderPoint(it.ref, cc.x, cc.y);
+      out[it.an.id] = finish(box, anchor, CW, { gutter: true, edge });
+    }
+  }
+  for (const edge of ['top', 'bottom'] as const) {
+    const list = buckets[edge].sort((a, b) => a.cx - b.cx);
+    let cursor = -Infinity;
+    for (const it of list) {
+      const CW = it.m.w, CH = it.m.h;
+      let x = it.cx - CW / 2; if (x < cursor) x = cursor; cursor = x + CW + stackGap;
+      const by = edge === 'top' ? bounds.y - gap - CH : bounds.y + bounds.h + gap;
+      const box: AnnRect = { x, y: by, w: CW, h: CH };
+      const cc = { x: box.x + CW / 2, y: box.y + CH / 2 };
+      const anchor = it.ref.point ? { x: it.ref.x, y: it.ref.y } : rectBorderPoint(it.ref, cc.x, cc.y);
+      out[it.an.id] = finish(box, anchor, CW, { gutter: true, edge });
+    }
+  }
+  return out;
+}
+
 /* ---- shared note visuals (parity with the design) ------------------------ */
 
 /** The note glyph used on the drag-out handle. */
@@ -261,6 +340,12 @@ export function useAnnotations(opts: {
   setAnnotations: (fn: (a: Annotation[]) => Annotation[]) => void;
   annRef: (target: string) => AnnRef | null;
   obstacles: AnnRect[];
+  /** Diagram content bounds (union of nodes/frames). Non-dragged notes are
+   *  arranged into the gutter just outside this box. Omit to fall back to the
+   *  legacy beside-the-node placement. */
+  bounds?: AnnRect;
+  /** Horizontal edge the document title occupies, so the gutter skips it. */
+  titleEdge?: 'top' | 'bottom' | null;
   accent: string;
   panMode: boolean;
   toWorld: (clientX: number, clientY: number) => { x: number; y: number };
@@ -273,7 +358,7 @@ export function useAnnotations(opts: {
   /** Clear the editor's other selections (canvas / header) when a note takes selection. */
   onSelect?: () => void;
 }): AnnotationsApi {
-  const { annotations, setAnnotations, annRef, obstacles, accent, panMode, toWorld, nextId, canvasSel, onPanStart, onSelect } = opts;
+  const { annotations, setAnnotations, annRef, obstacles, bounds, titleEdge, accent, panMode, toWorld, nextId, canvasSel, onPanStart, onSelect } = opts;
   const [selected, setSelected] = useState<string | null>(null);
   const [edit, setEdit] = useState<{ id: string } | null>(null);
   const [editVal, setEditVal] = useState('');
@@ -346,8 +431,7 @@ export function useAnnotations(opts: {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (edit || !selected) return;
-      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
-      if (tag === 'input' || tag === 'textarea') return;
+      if (isTypingTarget(e)) return;
       if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); setAnnotations((as) => as.filter((a) => a.id !== selected)); setSelected(null); }
     };
     window.addEventListener('keydown', onKey);
@@ -355,10 +439,23 @@ export function useAnnotations(opts: {
   }, [selected, edit]); // eslint-disable-line
 
   const views = useMemo(
-    () => annotations
-      .map((an) => { const pl = placeAnnotation(an, annRef(an.target), obstacles); return pl ? { an, pl } : null; })
-      .filter((v): v is { an: Annotation; pl: AnnPlacement } => v !== null),
-    [annotations, annRef, obstacles],
+    () => {
+      // Non-dragged notes default into the outer gutter (margins); a dragged note
+      // (with an `offset`) keeps free placement beside its target. Computed once
+      // per layout so leaders along an edge stay sorted + un-crossed.
+      const gutterMap = bounds
+        ? placeGutter(annotations.filter((a) => !a.offset), (a) => annRef(a.target), bounds, { titleEdge })
+        : {};
+      return annotations
+        .map((an) => {
+          const pl = !an.offset && (an.id in gutterMap)
+            ? gutterMap[an.id]
+            : placeAnnotation(an, annRef(an.target), obstacles);
+          return pl ? { an, pl } : null;
+        })
+        .filter((v): v is { an: Annotation; pl: AnnPlacement } => v !== null);
+    },
+    [annotations, annRef, obstacles, bounds, titleEdge],
   );
 
   const layer = (

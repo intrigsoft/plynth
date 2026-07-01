@@ -26,7 +26,7 @@ import {
   type Tool,
 } from '../engine';
 import { FRAME_ORDER, FRAME_TYPES } from '../engine';
-import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
+import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, headerEdge, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
 import { editorBridge } from '../editor-bridge';
 import { applyComponentChanges, componentReadSnapshot, type ComponentChange } from './ai-ops';
@@ -180,7 +180,7 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
   const ann = useAnnotations({
     annotations: cm.annotations,
     setAnnotations: (fn) => patch({ annotations: fn(cm.annotations) }),
-    annRef, obstacles: annObstacles, accent: ACCENT, panMode: tool === 'pan',
+    annRef, obstacles: annObstacles, bounds: contentBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode: tool === 'pan',
     toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
     onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); header.setSelected(false); },
   });
