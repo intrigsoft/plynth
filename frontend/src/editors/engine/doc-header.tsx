@@ -2,7 +2,7 @@
  *
  * Ported from the design's `annotations.js` PlynthDocHeader. A header is
  * renderer-positioned, never free coordinates: the model stores only a discrete
- * `position` (one of 8 perimeter slots) + optional `metadata`. The title and
+ * `position` (one of 6 top/bottom perimeter slots) + optional `metadata`. The title and
  * description are read live from the document (name + desc) and never copied
  * into the diagram model. Given the diagram's content bounds, the renderer
  * places the block just outside the chosen edge so the title travels with the
@@ -19,20 +19,33 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 
 export type HeaderPosition =
   | 'top-left' | 'top' | 'top-right'
-  | 'left' | 'right'
   | 'bottom-left' | 'bottom' | 'bottom-right';
 
-/** 8 perimeter slots: 4 corners + 4 edge midpoints (no center — it would cover the diagram). */
+/** 6 perimeter slots on the top/bottom edges only (3 each). Left/right are gone:
+ *  a title block is horizontal and reads badly running down a side. */
 export const HEADER_POSITIONS: HeaderPosition[] = [
-  'top-left', 'top', 'top-right', 'left', 'right', 'bottom-left', 'bottom', 'bottom-right',
+  'top-left', 'top', 'top-right', 'bottom-left', 'bottom', 'bottom-right',
 ];
 
-/** 3×3 picker grid cell (row, column) for each position; center (2,2) is intentionally empty. */
+/** 3×3 picker grid cell (row, column) for each position; the middle row stays empty. */
 export const HEADER_POS_CELL: Record<HeaderPosition, [number, number]> = {
   'top-left': [1, 1], top: [1, 2], 'top-right': [1, 3],
-  left: [2, 1], right: [2, 3],
   'bottom-left': [3, 1], bottom: [3, 2], 'bottom-right': [3, 3],
 };
+
+/** Legacy docs may carry the removed `'left'`/`'right'` slots — map them to the
+ *  nearest kept slot so old saved diagrams still place sensibly. */
+export function normHeaderPosition(p: HeaderPosition | 'left' | 'right' | undefined): HeaderPosition {
+  if (p === 'left') return 'top-left';
+  if (p === 'right') return 'top-right';
+  return p || 'top-left';
+}
+
+/** Which horizontal edge the header occupies — `'top'` | `'bottom'`. The gutter
+ *  arranger excludes this edge so notes never collide with the title. */
+export function headerEdge(p: HeaderPosition | 'left' | 'right' | undefined): 'top' | 'bottom' {
+  return normHeaderPosition(p).startsWith('bottom') ? 'bottom' : 'top';
+}
 
 export interface HeaderMeta { key: string; value: string }
 
@@ -107,18 +120,14 @@ function measure(h: DocHeaderModel, width: number): { w: number; h: number } {
 export function placeHeader(h: DocHeaderModel, bounds: HeaderBounds): HeaderPlacement {
   const w = widthFor(bounds);
   const size = measure(h, w);
-  const pos = h.position || 'top-left';
+  const pos = normHeaderPosition(h.position);
   let x: number;
   let align: HeaderPlacement['align'];
-  if (pos === 'left') { x = bounds.x - GAP - w; align = 'right'; }
-  else if (pos === 'right') { x = bounds.x + bounds.w + GAP; align = 'left'; }
-  else if (pos === 'top-left' || pos === 'bottom-left') { x = bounds.x; align = 'left'; }
+  if (pos === 'top-left' || pos === 'bottom-left') { x = bounds.x; align = 'left'; }
   else if (pos === 'top-right' || pos === 'bottom-right') { x = bounds.x + bounds.w - w; align = 'right'; }
   else { x = bounds.x + bounds.w / 2 - w / 2; align = 'center'; } // top | bottom
-  let y: number;
-  if (pos === 'left' || pos === 'right') y = bounds.y + bounds.h / 2 - size.h / 2;
-  else if (pos === 'top' || pos === 'top-left' || pos === 'top-right') y = bounds.y - GAP - size.h;
-  else y = bounds.y + bounds.h + GAP;
+  // top/bottom edge only — left/right slots were removed (mapped by normHeaderPosition)
+  const y = pos.startsWith('bottom') ? bounds.y + bounds.h + GAP : bounds.y - GAP - size.h;
   return { x, y, w, h: size.h, align };
 }
 
@@ -277,7 +286,7 @@ export function DocHeaderPicker(props: {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,14px)', gridTemplateRows: 'repeat(3,14px)', gap: 2 }}>
         {HEADER_POSITIONS.map((p) => {
           const [row, col] = HEADER_POS_CELL[p];
-          const on = hdr.position === p;
+          const on = normHeaderPosition(hdr.position) === p;
           return (
             <div key={p} title={p} onClick={() => onPick(p)}
               style={{ gridRow: row, gridColumn: col, borderRadius: 3, cursor: 'pointer', background: on ? accent : '#3a414d', boxShadow: on ? `0 0 0 2px ${accent}66` : 'none' }} />
