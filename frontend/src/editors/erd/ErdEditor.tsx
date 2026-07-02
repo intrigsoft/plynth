@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
-  DEFAULT_STYLE_ID,
   EditableLabel,
   EditorShell,
   PaletteTile,
@@ -12,85 +11,113 @@ import {
   PillToggle,
   RailLabel,
   SelectionPill,
-  StylePicker,
-  TextNode,
   autoArrange,
   bbox,
   center,
   descendants,
-  loadTextStyles,
-  measureText,
   perp,
   rectEdge,
-  textStyleById,
-  textStyleCss,
   useBoxCanvas,
   useViewport,
+  DocHeaderBlock,
+  DocHeaderPicker,
+  useDocHeader,
+  unionBounds,
+  useAnnotations,
+  annHandleStyle,
+  NoteIcon,
+  headerEdge,
+  type AnnRef,
+  type HeaderPosition,
   type ExportFormat,
   type Frame,
-  type Rect,
   type Tool,
 } from '../engine';
 import type { EditorProps } from '../types';
+import { editorBridge } from '../editor-bridge';
+import { applyErdChanges, erdReadSnapshot, type ErdChange } from './ai-ops';
 import {
   asErd,
   CARDS,
   CARD_LABEL,
   colToText,
   maxId,
-  measureEntity,
   parseCol,
   type Card,
   type ErdEntity,
   type ErdModel,
   type ErdRel,
-  type TextNode as ErdText,
 } from './model';
 import { CrowDefs, cardMarker } from './markers';
-import { runErdExport } from './export';
+import { buildErdGeom, renderErdExport, runErdExport } from './export';
 
 const ACCENT = '#a21caf';
 const cardOptions = CARDS.map((c) => ({ value: c, label: CARD_LABEL[c] }));
 
-export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
+export function ErdEditor({ model, onModel, docName, description, exportApi }: EditorProps) {
   const erd = useMemo(() => asErd(model), [model]);
   const vp = useViewport();
   const [tool, setTool] = useState<Tool>('select');
   const [edit, setEdit] = useState<{ id: number; field: 'name' | number } | null>(null);
   const [editVal, setEditVal] = useState('');
   const [addCol, setAddCol] = useState('');
-  const [textEdit, setTextEdit] = useState<{ id: number } | null>(null);
-  const [textEditVal, setTextEditVal] = useState('');
   const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
   const [relEditVal, setRelEditVal] = useState('');
-  const styles = useMemo(() => loadTextStyles(), []);
   const idc = useRef(maxId(erd));
 
   const patch = useCallback((next: Partial<ErdModel>) => onModel({ ...erd, ...next } as DiagramModel), [erd, onModel]);
+
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
+   * registers a handle the root-level adapter calls; a `latest` ref keeps the
+   * handle reading the current model without re-registering on every keystroke. */
+  const aiLatest = useRef({ erd, onModel, docName });
+  aiLatest.current = { erd, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'erd',
+        read: () => erdReadSnapshot(aiLatest.current.erd, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyErdChanges(aiLatest.current.erd, changes as ErdChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent. Recomputes
+        // geometry from the live model (same `buildErdGeom` the render `useMemo`
+        // uses), so the exported image matches what's on screen without reading
+        // any component-local ref.
+        exportImage: (fmt) =>
+          renderErdExport(fmt, aiLatest.current.erd, buildErdGeom(aiLatest.current.erd), aiLatest.current.docName),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (the assistant's `rearrange_annotations` tool /
+        // the editor's "Arrange comments" action). Pure cosmetic model edit —
+        // the renderer re-derives each callout box from its target every frame.
+        rearrangeAnnotations: () => {
+          const { erd: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
   const setEntities = (fn: (e: ErdEntity[]) => ErdEntity[]) => patch({ entities: fn(erd.entities) });
   const setRels = (fn: (r: ErdRel[]) => ErdRel[]) => patch({ rels: fn(erd.rels) });
-  const setTexts = (fn: (t: ErdText[]) => ErdText[]) => patch({ texts: fn(erd.texts) });
   const setFrames = (fn: (f: Frame[]) => Frame[]) => patch({ frames: fn(erd.frames) });
 
-  /* geometry */
-  const geom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const e of erd.entities) {
-      const sz = measureEntity(e, false);
-      m.set(String(e.id), { x: e.x, y: e.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [erd.entities]);
+  /* geometry — shared with the headless export path (see buildErdGeom). */
+  const geom = useMemo(() => buildErdGeom(erd), [erd.entities]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
-  const textGeom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const t of erd.texts) {
-      const sz = measureText(t.content, textStyleById(styles, t.styleId));
-      m.set(String(t.id), { x: t.x, y: t.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [erd.texts, styles]);
-  const textRectOf = useCallback((id: string) => textGeom.get(id) ?? null, [textGeom]);
   const frameRectOf = useCallback((id: string) => {
     const f = erd.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
@@ -125,14 +152,6 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
     setFrames((fs) => [...fs, { id, type: 'frame', label: 'Frame', x, y, w: 300, h: 190 }]);
     return id;
   }, [erd]); // eslint-disable-line
-  /** Create a text node and immediately open its inline editor (palette drop + dbl-click). */
-  const createText = useCallback((x: number, y: number): string => {
-    const id = ++idc.current;
-    setTexts((ts) => [...ts, { id, x, y, content: 'Text', styleId: DEFAULT_STYLE_ID }]);
-    setTextEdit({ id });
-    setTextEditVal('Text');
-    return String(id);
-  }, [erd]); // eslint-disable-line
   const addRel = useCallback((from: string, to: string) => {
     if (from === to) return;
     const id = 'r' + ++idc.current;
@@ -144,9 +163,6 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
     onMoveNode: (id, x, y) => setEntities((es) => es.map((e) => (String(e.id) === id ? { ...e, x, y } : e))),
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createEntity(kind, x, y),
-    onCreateText: (x, y) => createText(x, y),
-    textRectOf,
-    onMoveText: (id, x, y) => setTexts((ts) => ts.map((t) => (String(t.id) === id ? { ...t, x, y } : t))),
     onCreateFrame: (x, y) => createFrame(x, y),
     frameRectOf,
     frameContentsOf,
@@ -163,15 +179,56 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
       if (!sel) return;
       if (sel.kind === 'node') {
         const nid = Number(sel.id);
-        setEntities((es) => es.filter((e) => e.id !== nid));
-        setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid));
+        // Atomic: drop the node AND its connectors in ONE patch. Two separate
+        // setEntities/setRels calls each spread the same stale `erd`, so the
+        // second (rels) clobbers the first (entities) — the node survives and
+        // only the connector goes. Single patch updates both arrays together.
+        patch({
+          entities: erd.entities.filter((e) => e.id !== nid),
+          rels: erd.rels.filter((r) => r.from !== nid && r.to !== nid),
+        });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
-      else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
     },
-    editing: !!edit || !!textEdit || !!relEdit,
+    editing: !!edit || !!relEdit,
   });
   const { sel } = bc;
+
+  /* ---- document header — title = docName, description = doc desc; only the
+   *  discrete position + metadata are stored on the model (no coordinates). The
+   *  shared engine hook owns placement + selection; we only supply the content
+   *  bounds (union of every node / frame rect on the canvas). */
+  const contentBounds = useMemo(
+    () => unionBounds([...geom.values(), ...erd.frames]),
+    [geom, erd.frames],
+  );
+  const header = useDocHeader({ docName, description, header: erd.header, contentBounds, canvasSel: sel });
+  const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: erd.header?.metadata ?? [] } });
+
+  /* ---- anchored annotations — callout notes pinned to a table / relationship /
+   *  frame (never free coordinates). The shared engine hook owns selection, inline
+   *  edit, drag, delete and the leader/card render; we only resolve a target id to
+   *  its anchor rect (point=true for a connector midpoint) + the obstacle rects. */
+  const annRef = useCallback((target: string): AnnRef | null => {
+    const rel = erd.rels.find((r) => r.id === target);
+    if (rel) {
+      const a = geom.get(String(rel.from)), b = geom.get(String(rel.to));
+      if (a && b) { const ca = center(a), cb = center(b); const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y); return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, w: 0, h: 0, point: true }; }
+    }
+    const fr = erd.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const ent = erd.entities.find((e) => String(e.id) === target);
+    if (ent) { const g = geom.get(String(ent.id)); if (g) return { x: ent.x, y: ent.y, w: g.w, h: g.h }; }
+    return null;
+  }, [erd.rels, erd.frames, erd.entities, geom]);
+  const annObstacles = useMemo(() => [...geom.values()], [geom]);
+  const ann = useAnnotations({
+    annotations: erd.annotations,
+    setAnnotations: (fn) => patch({ annotations: fn(erd.annotations) }),
+    annRef, obstacles: annObstacles, bounds: contentBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode: tool === 'pan',
+    toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
+    onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); header.setSelected(false); },
+  });
 
   /* fit on first mount */
   const fitAll = useCallback(() => {
@@ -225,21 +282,6 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
     setAddCol('');
   };
 
-  /* ---- text-node inline edit ---- */
-  const beginTextEdit = (id: number) => {
-    const t = erd.texts.find((x) => Number(x.id) === id);
-    if (!t) return;
-    setTextEdit({ id });
-    setTextEditVal(t.content);
-    bc.setSel({ kind: 'text', id: String(id) });
-  };
-  const commitTextEdit = () => {
-    if (!textEdit) return;
-    const { id } = textEdit;
-    setTexts((ts) => ts.map((t) => (Number(t.id) === id ? { ...t, content: textEditVal.trim() ? textEditVal : t.content } : t)));
-    setTextEdit(null);
-  };
-
   /* ---- relationship-label inline edit (double-click a connector) ---- */
   const beginRelLabel = (id: string) => {
     const r = erd.rels.find((x) => x.id === id);
@@ -260,9 +302,8 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
   /* ---- relationship + frame selection helpers ---- */
   const selRel = sel?.kind === 'edge' ? erd.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? erd.frames.find((f) => f.id === sel.id) : undefined;
-  const selText = sel?.kind === 'text' ? erd.texts.find((t) => String(t.id) === sel.id) : undefined;
   const selNode = sel?.kind === 'node' ? erd.entities.find((e) => String(e.id) === sel.id) : undefined;
-  const deleteNode = (id: number) => { setEntities((es) => es.filter((x) => x.id !== id)); setRels((rs) => rs.filter((r) => r.from !== id && r.to !== id)); bc.setSel(null); };
+  const deleteNode = (id: number) => { patch({ entities: erd.entities.filter((x) => x.id !== id), rels: erd.rels.filter((r) => r.from !== id && r.to !== id) }); bc.setSel(null); };
   const setCard = (end: 'from' | 'to', c: Card) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, [end === 'from' ? 'fromCard' : 'toCard']: c } : r)));
   const toggleIdent = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, identifying: !r.identifying } : r)));
   const reverseRel = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, from: r.to, to: r.from, fromCard: r.toCard, toCard: r.fromCard } : r)));
@@ -313,6 +354,27 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
     );
   });
 
+  /* ---- render: connector note handles (drag out → a note on the relationship) ---- */
+  const connHandles = erd.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    if (!((selected || hov) && relEdit?.id !== r.id && !bc.palette)) return null;
+    const ca = center(a), cb = center(b);
+    const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y);
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const pp = perp(p1, p2);
+    return (
+      <div key={r.id} data-testid={'erd-conn-note-handle-' + r.id} title="Drag out to add a note"
+        onPointerDown={(ev) => ann.createFromTarget(r.id, ev)}
+        style={annHandleStyle(ACCENT, { left: 0, top: 0, transform: `translate(${(mid.x + pp.x * -15).toFixed(1)}px,${(mid.y + pp.y * -15).toFixed(1)}px) translate(-50%,-50%)`, zIndex: 6 })}>
+        <NoteIcon />
+      </div>
+    );
+  });
+
   /* ---- render entity box ---- */
   const renderEntity = (e: ErdEntity) => {
     const g = geom.get(String(e.id))!;
@@ -321,7 +383,7 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
     const showPorts = (hov || selected) && !bc.palette;
     return (
       <div key={e.id} style={{ position: 'absolute', transform: `translate(${e.x}px,${e.y}px)`, width: g.w, fontFamily: 'var(--mono)', userSelect: 'none', cursor: tool === 'pan' ? 'grab' : 'move', zIndex: selected ? 5 : hov ? 4 : 2 }}
-        onPointerDown={(ev) => bc.nodeDown(String(e.id), ev)}
+        onPointerDown={(ev) => { if ((ev.ctrlKey || ev.metaKey) && tool !== 'pan') { ann.createFromTarget(String(e.id), ev); return; } bc.nodeDown(String(e.id), ev); }}
         onPointerEnter={() => bc.setHover('node:' + String(e.id))} onPointerLeave={() => bc.setHover(null)}
         onDoubleClick={(ev) => ev.stopPropagation()}>
         <div style={{ background: '#fff', border: `${e.weak ? '3px double' : '1.6px solid'} ${selected ? ACCENT : '#1b2230'}`, borderRadius: 7, boxShadow: selected ? '0 0 0 3px rgba(162,28,175,.15)' : '0 2px 8px rgba(16,20,27,.06)' }}>
@@ -368,28 +430,14 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
           };
           return <div key={side} onPointerDown={(ev) => bc.portDown(String(e.id), ev)} style={{ position: 'absolute', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'crosshair', zIndex: 8, ...pos[side] }} />;
         })}
+        {showPorts && (
+          <div data-testid={'erd-note-handle-' + e.id} title="Drag out to add a note"
+            onPointerDown={(ev) => ann.createFromTarget(String(e.id), ev)}
+            style={annHandleStyle(ACCENT, { right: -9, bottom: -9 })}>
+            <NoteIcon />
+          </div>
+        )}
       </div>
-    );
-  };
-
-  /* ---- render text node ---- */
-  const renderText = (t: ErdText) => {
-    const g = textGeom.get(String(t.id))!;
-    const st = textStyleById(styles, t.styleId);
-    const selected = sel?.kind === 'text' && sel.id === String(t.id);
-    const hov = bc.hover === 'text:' + String(t.id);
-    return (
-      <TextNode key={t.id} x={t.x} y={t.y} width={g.w} height={g.h} style={st} content={t.content}
-        accent={ACCENT} selected={selected} hovered={hov} editing={textEdit?.id === Number(t.id)} editValue={textEditVal}
-        panMode={tool === 'pan'}
-        onPointerDown={(ev) => bc.textDown(String(t.id), ev)}
-        onPointerEnter={() => bc.setHover('text:' + String(t.id))}
-        onPointerLeave={() => bc.setHover(null)}
-        onBeginEdit={() => beginTextEdit(Number(t.id))}
-        onEditChange={setTextEditVal}
-        onCommit={commitTextEdit}
-        onCancel={() => setTextEdit(null)}
-        testId={'erd-text-' + t.id} />
     );
   };
 
@@ -423,8 +471,6 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
     <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, opacity: 0.95 }}>
       {bc.palette.kind === 'frame' ? (
         <div style={{ width: 180, height: 110, border: '2px dashed #3a5bff', background: 'rgba(58,91,255,.06)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#3a5bff', fontSize: 12 }}>Frame</div>
-      ) : bc.palette.kind === 'text' ? (
-        <div style={{ ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)), padding: '2px 6px', border: `1.5px dashed ${ACCENT}`, borderRadius: 6, background: 'rgba(255,255,255,.85)' }}>Text</div>
       ) : (
         <div style={{ width: 158, border: `${bc.palette.kind === 'weak' ? '3px double' : '1.6px solid'} ${ACCENT}`, borderRadius: 7, background: '#fff', boxShadow: '0 8px 20px rgba(16,20,27,.2)' }}>
           <div style={{ background: '#f3e8f7', padding: '6px 10px', textAlign: 'center', fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 12 }}>{bc.palette.kind === 'weak' ? 'new_detail' : 'new_table'}</div>
@@ -442,10 +488,6 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
       <PaletteTile label="WEAK" onPointerDown={(e) => bc.startPaletteDrag('weak', e)}>
         <svg width={30} height={22} viewBox="0 0 30 22" fill="none" stroke="#5b6678" strokeWidth={1.3}><rect x="2" y="2" width="26" height="18" rx="2" /><rect x="5" y="5" width="20" height="12" rx="1" /></svg>
       </PaletteTile>
-      <RailLabel>TEXT</RailLabel>
-      <PaletteTile label="TEXT" onPointerDown={(e) => bc.startPaletteDrag('text', e)}>
-        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
-      </PaletteTile>
       <RailLabel>GROUP</RailLabel>
       <PaletteTile label="FRAME" onPointerDown={(e) => bc.startPaletteDrag('frame', e)}>
         <svg width={30} height={22} viewBox="0 0 30 22" fill="none" stroke="#5b6678" strokeWidth={1.3}><path d="M3 6h10v-3h14v16H3Z" strokeDasharray="3 2" /></svg>
@@ -456,17 +498,30 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
   return (
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
-      onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); bc.bgDown(e); }}
-      onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
+      onFit={fitAll} onAutoLayout={() => void autoLayout()} onArrangeComments={ann.views.length ? ann.rearrange : undefined}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
       world={
         <>
+          {header.show && (
+            <DocHeaderBlock
+              state={header} accent={ACCENT} panMode={tool === 'pan'}
+              onSelect={() => { bc.setSel(null); header.setSelected(true); }}
+              onPanStart={bc.bgDown} testId="erd-doc-header"
+            />
+          )}
           {framesSorted.map((f) => {
             const selected = sel?.kind === 'frame' && sel.id === f.id;
             return (
               <div key={f.id} onPointerDown={(e) => bc.frameDown(f.id, e)} style={{ position: 'absolute', transform: `translate(${f.x}px,${f.y}px)`, width: f.w, height: f.h, border: `1.5px ${f.type === 'frame' ? 'dashed' : 'solid'} ${selected ? '#3a5bff' : '#aab4c4'}`, borderRadius: 8, background: 'rgba(255,255,255,.35)', zIndex: 1 }}>
                 <div style={{ position: 'absolute', top: 4, left: 8, fontFamily: 'var(--mono)', fontSize: 10, color: '#67748a' }}>{f.label}</div>
                 {selected && <div onPointerDown={(e) => bc.frameResizeDown(f.id, e)} style={{ position: 'absolute', right: -6, bottom: -6, width: 13, height: 13, background: '#fff', border: '2px solid #3a5bff', cursor: 'nwse-resize' }} />}
+                {selected && (
+                  <div data-testid={'erd-frame-note-handle-' + f.id} title="Drag out to add a note"
+                    onPointerDown={(e) => ann.createFromTarget(f.id, e)}
+                    style={annHandleStyle(ACCENT, { right: 22, bottom: -11 })}>
+                    <NoteIcon />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -475,8 +530,9 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
           {relLabels}
+          {connHandles}
           {erd.entities.map(renderEntity)}
-          {erd.texts.map(renderText)}
+          {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
             const p1 = rectEdge(a, bc.link.pos.x, bc.link.pos.y);
@@ -486,23 +542,15 @@ export function ErdEditor({ model, onModel, docName, exportApi }: EditorProps) {
       }
       hud={
         <>
+          {header.selected && header.show && (
+            <DocHeaderPicker state={header} vp={vp} accent={ACCENT} onPick={setHeaderPos} testId="erd-header-toolbar" />
+          )}
           {relPill}
           {selNode && (() => {
             const g = geom.get(String(selNode.id))!;
             return (
               <SelectionPill x={(selNode.x + g.w / 2) * vp.scale + vp.tx} y={selNode.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
                 <PillDelete onClick={() => deleteNode(selNode.id)} title="Delete table (Del)" testId="erd-node-delete" />
-              </SelectionPill>
-            );
-          })()}
-          {selText && (() => {
-            const g = textGeom.get(String(selText.id))!;
-            return (
-              <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-                <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
-                  onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
-                <PillDivider />
-                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="erd-text-delete" />
               </SelectionPill>
             );
           })()}

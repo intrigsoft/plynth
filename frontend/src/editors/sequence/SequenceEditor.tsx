@@ -10,6 +10,17 @@ import {
   RailLabel,
   SelectionPill,
   useViewport,
+  DocHeaderBlock,
+  DocHeaderPicker,
+  useDocHeader,
+  unionBounds,
+  useAnnotations,
+  annHandleStyle,
+  NoteIcon,
+  isTypingTarget,
+  headerEdge,
+  type AnnRef,
+  type HeaderPosition,
   type Tool,
   type ExportFormat,
 } from '../engine';
@@ -33,7 +44,9 @@ import {
   type SeqLifeline,
 } from './model';
 import { SeqDefs, markerFor } from './markers';
-import { runSequenceExport } from './export';
+import { renderSequenceExport, runSequenceExport } from './export';
+import { editorBridge } from '../editor-bridge';
+import { applySequenceChanges, sequenceReadSnapshot, type SequenceChange } from './ai-ops';
 
 const ACCENT = '#0e9488';
 
@@ -70,7 +83,7 @@ type Drag =
   | { kind: 'palette'; pkind: PaletteKind; sx: number; sy: number; moved: boolean }
   | null;
 
-export function SequenceEditor({ model, onModel, docName, exportApi }: EditorProps) {
+export function SequenceEditor({ model, onModel, docName, description, exportApi }: EditorProps) {
   const seq = asSequence(model);
   const [tool, setTool] = useState<Tool>('select');
   const [spacePan, setSpacePan] = useState(false);
@@ -78,6 +91,7 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
   const [editing, setEditing] = useState<Editing>(null);
   const [editVal, setEditVal] = useState('');
   const [hover, setHover] = useState<{ lifeId: number; pointerY: number } | null>(null);
+  const [hoverHead, setHoverHead] = useState<number | null>(null);
   const [gesture, setGesture] = useState<Gesture>(null);
   const [palette, setPalette] = useState<{ kind: PaletteKind; x: number; y: number } | null>(null);
   const [draggingId, setDraggingId] = useState<string | number | null>(null);
@@ -287,6 +301,49 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
     return () => { exportApi.current = null; };
   }, [seq, docName, exportApi]);
 
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
+   * registers a handle the root-level adapter calls; a `latest` ref keeps the
+   * handle reading the current model without re-registering on every keystroke. */
+  const aiLatest = useRef({ seq, onModel, docName });
+  aiLatest.current = { seq, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'sequence',
+        read: () => sequenceReadSnapshot(aiLatest.current.seq, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applySequenceChanges(aiLatest.current.seq, changes as SequenceChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent — the
+        // sequence build fns derive their own geometry from the live model, so
+        // the exported image matches what's on screen without reading any ref.
+        exportImage: (fmt) => renderSequenceExport(fmt, aiLatest.current.seq, aiLatest.current.docName),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (the assistant's `rearrange_annotations` tool /
+        // the editor's "Arrange comments" action). Pure cosmetic model edit —
+        // the renderer re-derives each callout box from its target every frame.
+        rearrangeAnnotations: () => {
+          const { seq: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
+
   /* ---- global pointer + key handling (attached once) ---------------------- */
   const handleMove = (e: PointerEvent) => {
     const d = dragRef.current;
@@ -391,8 +448,7 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
 
   const handleKey = (e: KeyboardEvent) => {
     if (editingRef.current) return;
-    const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
-    if (tag === 'textarea' || tag === 'input') return;
+    if (isTypingTarget(e)) return;
     if (e.key === ' ') { if (!panModeRef.current) { e.preventDefault(); setSpacePan(true); } return; }
     if (e.key === 'Escape') {
       dragRef.current = null;
@@ -443,6 +499,7 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
   const headDown = (id: number, e: RPointerEvent) => {
     e.stopPropagation();
     if (maybePan(e)) return;
+    if ((e.ctrlKey || e.metaKey) && !panMode) { ann.createFromTarget(String(id), e); return; }
     commitEdit();
     const l = life(id);
     setSel({ kind: 'life', id });
@@ -466,6 +523,7 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
   const msgDown = (id: string, e: RPointerEvent) => {
     e.stopPropagation();
     if (maybePan(e)) return;
+    if ((e.ctrlKey || e.metaKey) && !panMode) { ann.createFromTarget(id, e); return; }
     commitEdit();
     const m = seqRef.current.messages.find((x) => x.id === id);
     setSel({ kind: 'msg', id });
@@ -474,6 +532,7 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
   const actDown = (id: string, e: RPointerEvent) => {
     e.stopPropagation();
     if (maybePan(e)) return;
+    if ((e.ctrlKey || e.metaKey) && !panMode) { ann.createFromTarget(id, e); return; }
     commitEdit();
     const a = seqRef.current.activations.find((x) => x.id === id);
     setSel({ kind: 'act', id });
@@ -489,6 +548,7 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
   const frameDown = (id: string, e: RPointerEvent) => {
     e.stopPropagation();
     if (maybePan(e)) return;
+    if ((e.ctrlKey || e.metaKey) && !panMode) { ann.createFromTarget(id, e); return; }
     commitEdit();
     const f = seqRef.current.frames.find((x) => x.id === id);
     setSel({ kind: 'frame', id });
@@ -521,6 +581,37 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
   /* ---- render geometry ---------------------------------------------------- */
   const bottom = bottomY(seq);
   const lineH = bottom - LINE_TOP;
+
+  /* document header (shared engine surface). Bounds span the lifeline heads down
+   * to the timeline bottom, plus any fragments. */
+  const headerBounds = unionBounds([
+    ...seq.lifelines.map((l) => { const w = measureLife(l).w; return { x: l.x - w / 2, y: HEAD_TOP, w, h: bottom - HEAD_TOP }; }),
+    ...seq.frames.map((f) => ({ x: f.x, y: f.y, w: f.w, h: f.h })),
+  ]);
+  const header = useDocHeader({ docName, description, header: seq.header, contentBounds: headerBounds, canvasSel: sel });
+  const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: seq.header?.metadata ?? [] } });
+
+  /* anchored annotations — shared engine layer. Targets: a lifeline (head box),
+   *  a message (point at its midpoint) or an interaction frame (rect). */
+  const annRef = (target: string): AnnRef | null => {
+    const ll = seq.lifelines.find((l) => String(l.id) === target);
+    if (ll) { const w = measureLife(ll).w; return { x: ll.x - w / 2, y: HEAD_TOP, w, h: HEAD_H }; }
+    const msg = seq.messages.find((m) => m.id === target);
+    if (msg) { const a = seq.lifelines.find((l) => l.id === msg.from), b = seq.lifelines.find((l) => l.id === msg.to); if (a && b) { const x = msg.self ? a.x + 58 : (a.x + b.x) / 2; return { x, y: msg.y, w: 0, h: 0, point: true }; } }
+    const fr = seq.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const ac = seq.activations.find((a) => a.id === target);
+    if (ac) { const al = seq.lifelines.find((l) => l.id === ac.lifelineId); if (al) return { x: al.x - ACT_W / 2, y: ac.top, w: ACT_W, h: Math.max(8, ac.bottom - ac.top) }; }
+    return null;
+  };
+  const annObstacles = seq.lifelines.map((l) => { const w = measureLife(l).w; return { x: l.x - w / 2, y: HEAD_TOP, w, h: HEAD_H }; });
+  const ann = useAnnotations({
+    annotations: seq.annotations,
+    setAnnotations: (fn) => patch({ annotations: fn(seq.annotations) }),
+    annRef, obstacles: annObstacles, bounds: headerBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode,
+    toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idRef.current, canvasSel: sel,
+    onPanStart: (e) => vp.beginPan(e), onSelect: () => { setSel(null); header.setSelected(false); },
+  });
   const stopProp = (e: { stopPropagation: () => void }) => e.stopPropagation();
   const editInput = (style: CSSProperties) => (
     <input
@@ -555,12 +646,21 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
           <div style={{ position: 'absolute', transform: `translate(${l.x - 7}px,${(hover?.pointerY ?? LINE_TOP) - 7}px) rotate(45deg)`, width: 14, height: 14, borderRadius: 2, background: ACCENT, border: '2px solid #fff', pointerEvents: 'none', zIndex: 6, boxShadow: '0 1px 4px rgba(16,20,27,.28)', animation: 'pulse 1.6s ease-out infinite' }} />
         )}
         <div onPointerDown={(e) => headDown(l.id, e)} onDoubleClick={(e) => { e.stopPropagation(); beginEdit({ kind: 'lifeline', id: l.id }); }}
+          onPointerEnter={() => { if (hoverHead !== l.id) setHoverHead(l.id); }}
+          onPointerLeave={() => { if (hoverHead === l.id) setHoverHead(null); }}
           style={{ position: 'absolute', transform: `translate(${headLeft}px,${HEAD_TOP}px)`, width: w, height: HEAD_H, display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none', cursor: panMode ? 'grab' : 'move', zIndex: 5, transition: noTrans ? 'none' : 'transform .3s cubic-bezier(.4,0,.2,1)', borderRadius: 9, boxShadow: selected ? '0 0 0 3px rgba(14,148,136,.18)' : isTarget ? '0 0 0 3px rgba(14,148,136,.32)' : 'none' }}>
           {selected && (
             <button onPointerDown={stopProp} onClick={() => removeLife(l.id)} title="Delete column (Del)"
               style={{ position: 'absolute', top: -10, right: -10, width: 22, height: 22, borderRadius: '50%', background: '#10141b', border: '2px solid #fff', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9 }}>
               <svg width={11} height={11} viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round" /></svg>
             </button>
+          )}
+          {(selected || hoverHead === l.id) && !palette && !gesture && (
+            <div data-testid={'sequence-note-handle-' + l.id} title="Drag out to add a note"
+              onPointerDown={(e) => ann.createFromTarget(String(l.id), e)}
+              style={annHandleStyle(ACCENT, { right: -10, bottom: -10 })}>
+              <NoteIcon />
+            </div>
           )}
           {isActor ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, width: '100%' }}>
@@ -599,6 +699,11 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
             </button>
             <div onPointerDown={(e) => actResizeDown(a.id, e)} title="Resize"
               style={{ position: 'absolute', left: '50%', bottom: -7, transform: 'translateX(-50%)', width: 14, height: 9, borderRadius: 3, background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'ns-resize', zIndex: 9, boxShadow: '0 1px 3px rgba(16,20,27,.25)' }} />
+            <div data-testid={'sequence-act-note-handle-' + a.id} title="Drag out to add a note"
+              onPointerDown={(e) => ann.createFromTarget(a.id, e)}
+              style={annHandleStyle(ACCENT, { left: 13, bottom: -9 })}>
+              <NoteIcon />
+            </div>
           </>
         )}
       </div>
@@ -782,11 +887,19 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
       palette={paletteRail}
       onFit={fitView}
       onAutoLayout={tidy}
+      onArrangeComments={ann.views.length ? ann.rearrange : undefined}
       cursor={cursor}
-      onCanvasPointerDown={(e) => { commitEdit(); if (!panMode) setSel(null); vp.beginPan(e); }}
+      onCanvasPointerDown={(e) => { commitEdit(); if (!panMode) setSel(null); ann.clear(); header.setSelected(false); vp.beginPan(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createLife({ name: 'Participant', x: w.x, select: true }); beginEdit({ kind: 'lifeline', id }); }}
       world={
         <>
+          {header.show && (
+            <DocHeaderBlock
+              state={header} accent={ACCENT} panMode={panMode}
+              onSelect={() => { setSel(null); header.setSelected(true); }}
+              onPanStart={(e) => vp.beginPan(e)} testId="sequence-doc-header"
+            />
+          )}
           {frameEls}
           {lifelineEls}
           {activationEls}
@@ -795,11 +908,15 @@ export function SequenceEditor({ model, onModel, docName, exportApi }: EditorPro
             <g style={{ pointerEvents: 'auto' }}>{messagePaths}</g>
           </svg>
           {messageLabelEls}
+          {ann.layer}
           {gestureEl}
         </>
       }
       hud={
         <>
+          {header.selected && header.show && (
+            <DocHeaderPicker state={header} vp={vp} accent={ACCENT} onPick={setHeaderPos} testId="sequence-header-toolbar" />
+          )}
           {hintText && (
             <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', background: '#10141b', color: '#e6eaf0', fontSize: 12.5, fontWeight: 500, padding: '8px 14px', borderRadius: 9, boxShadow: '0 6px 20px rgba(16,20,27,.25)', display: 'flex', alignItems: 'center', gap: 9, zIndex: 24 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', background: ACCENT, boxShadow: '0 0 0 4px rgba(14,148,136,.25)' }} />{hintText}

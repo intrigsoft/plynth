@@ -3,7 +3,6 @@ import type { CSSProperties } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
   CLOUD_D,
-  DEFAULT_STYLE_ID,
   EditableLabel,
   EditorShell,
   FRAME_ORDER,
@@ -15,19 +14,13 @@ import {
   PillSelect,
   RailLabel,
   SelectionPill,
-  StylePicker,
-  TextNode,
   autoArrange,
   bbox,
   center,
   descendants,
-  loadTextStyles,
-  measureText,
   nodeFaces,
   perp,
   rectEdge,
-  textStyleById,
-  textStyleCss,
   useBoxCanvas,
   useViewport,
   type ExportFormat,
@@ -36,6 +29,7 @@ import {
   type Rect,
   type Tool,
 } from '../engine';
+import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, headerEdge, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
 import {
   asDeployment,
@@ -48,10 +42,11 @@ import {
   type DeploymentNode,
   type DeploymentRel,
   type RelType,
-  type TextNode as DeploymentText,
 } from './model';
 import { cylinderPath, DpArrowDefs, FRAME_ICON, relDash, relMarkerEnd } from './markers';
-import { runDeploymentExport } from './export';
+import { renderDeploymentExport, runDeploymentExport } from './export';
+import { editorBridge } from '../editor-bridge';
+import { applyDeploymentChanges, deploymentReadSnapshot, type DeploymentChange } from './ai-ops';
 
 const ACCENT = '#c2410c';
 const FRAME_BLUE = '#3a5bff';
@@ -76,24 +71,20 @@ function specForKind(kind: string): Pick<DeploymentNode, 'kind' | 'stereotype' |
   }
 }
 
-export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorProps) {
+export function DeploymentEditor({ model, onModel, docName, description, exportApi }: EditorProps) {
   const dep = useMemo(() => asDeployment(model), [model]);
   const vp = useViewport();
   const [tool, setTool] = useState<Tool>('select');
   const [edit, setEdit] = useState<{ id: number; field: 'name' | number } | null>(null);
   const [editVal, setEditVal] = useState('');
   const [addItem, setAddItem] = useState('');
-  const [textEdit, setTextEdit] = useState<{ id: number } | null>(null);
-  const [textEditVal, setTextEditVal] = useState('');
   const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
   const [relEditVal, setRelEditVal] = useState('');
-  const styles = useMemo(() => loadTextStyles(), []);
   const idc = useRef(maxId(dep));
 
   const patch = useCallback((next: Partial<DeploymentModel>) => onModel({ ...dep, ...next } as DiagramModel), [dep, onModel]);
   const setNodes = (fn: (n: DeploymentNode[]) => DeploymentNode[]) => patch({ nodes: fn(dep.nodes) });
   const setRels = (fn: (r: DeploymentRel[]) => DeploymentRel[]) => patch({ rels: fn(dep.rels) });
-  const setTexts = (fn: (t: DeploymentText[]) => DeploymentText[]) => patch({ texts: fn(dep.texts) });
   const setFrames = (fn: (f: Frame[]) => Frame[]) => patch({ frames: fn(dep.frames) });
 
   /* geometry */
@@ -106,15 +97,6 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     return m;
   }, [dep.nodes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
-  const textGeom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const t of dep.texts) {
-      const sz = measureText(t.content, textStyleById(styles, t.styleId));
-      m.set(String(t.id), { x: t.x, y: t.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [dep.texts, styles]);
-  const textRectOf = useCallback((id: string) => textGeom.get(id) ?? null, [textGeom]);
   const frameRectOf = useCallback((id: string) => {
     const f = dep.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
@@ -149,14 +131,6 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     setFrames((fs) => [...fs, { id, type: 'frame', label: 'Frame', x, y, w: 300, h: 190 }]);
     return id;
   }, [dep]); // eslint-disable-line
-  /** Create a text node and immediately open its inline editor (palette drop + dbl-click). */
-  const createText = useCallback((x: number, y: number): string => {
-    const id = ++idc.current;
-    setTexts((ts) => [...ts, { id, x, y, content: 'Text', styleId: DEFAULT_STYLE_ID }]);
-    setTextEdit({ id });
-    setTextEditVal('Text');
-    return String(id);
-  }, [dep]); // eslint-disable-line
   const addRel = useCallback((from: string, to: string) => {
     if (from === to) return;
     const src = dep.nodes.find((n) => String(n.id) === from);
@@ -170,9 +144,6 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     onMoveNode: (id, x, y) => setNodes((ns) => ns.map((n) => (String(n.id) === id ? { ...n, x, y } : n))),
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createNode(kind, x, y),
-    onCreateText: (x, y) => createText(x, y),
-    textRectOf,
-    onMoveText: (id, x, y) => setTexts((ts) => ts.map((t) => (String(t.id) === id ? { ...t, x, y } : t))),
     onCreateFrame: (x, y) => createFrame(x, y),
     frameRectOf,
     frameContentsOf,
@@ -189,15 +160,46 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
       if (!sel) return;
       if (sel.kind === 'node') {
         const nid = Number(sel.id);
-        setNodes((ns) => ns.filter((n) => n.id !== nid));
-        setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid));
+        // Atomic: drop the node AND its connectors in ONE patch — two separate
+        // setNodes/setRels calls each spread the same stale `dep`, so the second
+        // clobbers the first and the node survives (only the edge goes).
+        patch({
+          nodes: dep.nodes.filter((n) => n.id !== nid),
+          rels: dep.rels.filter((r) => r.from !== nid && r.to !== nid),
+        });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
-      else if (sel.kind === 'text') setTexts((ts) => ts.filter((t) => String(t.id) !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
     },
-    editing: !!edit || !!textEdit || !!relEdit,
+    editing: !!edit || !!relEdit,
   });
   const { sel } = bc;
+
+  /* document header (shared engine surface; bounds = union of node/frame rects) */
+  const contentBounds = useMemo(
+    () => unionBounds([...geom.values(), ...dep.frames]),
+    [geom, dep.frames],
+  );
+  const header = useDocHeader({ docName, description, header: dep.header, contentBounds, canvasSel: sel });
+  const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: dep.header?.metadata ?? [] } });
+
+  /* anchored annotations — shared engine layer (see ERD for the reference wiring) */
+  const annRef = useCallback((target: string): AnnRef | null => {
+    const rel = dep.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), b = geom.get(String(rel.to)); if (a && b) { const ca = center(a), cb = center(b); const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y); return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, w: 0, h: 0, point: true }; } }
+    const fr = dep.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const n = dep.nodes.find((x) => String(x.id) === target);
+    if (n) { const g = geom.get(String(n.id)); if (g) return { x: n.x, y: n.y, w: g.w, h: g.h }; }
+    return null;
+  }, [dep.rels, dep.frames, dep.nodes, geom]);
+  const annObstacles = useMemo(() => [...geom.values()], [geom]);
+  const ann = useAnnotations({
+    annotations: dep.annotations,
+    setAnnotations: (fn) => patch({ annotations: fn(dep.annotations) }),
+    annRef, obstacles: annObstacles, bounds: contentBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode: tool === 'pan',
+    toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
+    onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); header.setSelected(false); },
+  });
 
   /* fit on first mount */
   const fitAll = useCallback(() => {
@@ -224,6 +226,48 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     });
     setTimeout(fitAll, 30);
   }, [dep, geom, patch, fitAll]);
+
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors ERD: the open editor registers
+   * a handle the root-level adapter calls; a `latest` ref keeps the handle
+   * reading the current model/geometry without re-registering on every keystroke. */
+  const aiLatest = useRef({ dep, geom, onModel, docName });
+  aiLatest.current = { dep, geom, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'deployment',
+        read: () => deploymentReadSnapshot(aiLatest.current.dep, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyDeploymentChanges(aiLatest.current.dep, changes as DeploymentChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent — uses the
+        // same live geometry the on-screen render uses, so the image matches.
+        exportImage: (fmt) =>
+          renderDeploymentExport(fmt, aiLatest.current.dep, aiLatest.current.geom, aiLatest.current.docName),
+        // Drop every manually-dragged note offset so callouts re-flow to their
+        // clean auto-placed positions (assistant's `rearrange_annotations` /
+        // the editor's "Arrange comments" action). Pure cosmetic model edit.
+        rearrangeAnnotations: () => {
+          const { dep: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
 
   /* export */
   useEffect(() => {
@@ -258,21 +302,6 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     setAddItem('');
   };
 
-  /* ---- text-node inline edit ---- */
-  const beginTextEdit = (id: number) => {
-    const t = dep.texts.find((x) => Number(x.id) === id);
-    if (!t) return;
-    setTextEdit({ id });
-    setTextEditVal(t.content);
-    bc.setSel({ kind: 'text', id: String(id) });
-  };
-  const commitTextEdit = () => {
-    if (!textEdit) return;
-    const { id } = textEdit;
-    setTexts((ts) => ts.map((t) => (Number(t.id) === id ? { ...t, content: textEditVal.trim() ? textEditVal : t.content } : t)));
-    setTextEdit(null);
-  };
-
   /* ---- relationship-label inline edit (double-click a connector) ---- */
   const beginRelLabel = (id: string) => {
     const r = dep.rels.find((x) => x.id === id);
@@ -293,9 +322,8 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
   /* selection helpers */
   const selRel = sel?.kind === 'edge' ? dep.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? dep.frames.find((f) => f.id === sel.id) : undefined;
-  const selText = sel?.kind === 'text' ? dep.texts.find((t) => String(t.id) === sel.id) : undefined;
   const selNode = sel?.kind === 'node' ? dep.nodes.find((n) => String(n.id) === sel.id) : undefined;
-  const deleteNode = (id: number) => { setNodes((ns) => ns.filter((n) => n.id !== id)); setRels((rs) => rs.filter((r) => r.from !== id && r.to !== id)); bc.setSel(null); };
+  const deleteNode = (id: number) => { patch({ nodes: dep.nodes.filter((n) => n.id !== id), rels: dep.rels.filter((r) => r.from !== id && r.to !== id) }); bc.setSel(null); };
   const setRelType = (t: RelType) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, type: t } : r)));
   const reverseRel = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, from: r.to, to: r.from } : r)));
   const setFrameType = (t: FrameType) => setFrames((fs) => fs.map((f) => (f.id === selFrame!.id ? { ...f, type: t } : f)));
@@ -347,6 +375,27 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     );
   });
 
+  /* connector note handles (drag out → a note on the relationship) */
+  const connHandles = dep.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    if (!((selected || hov) && relEdit?.id !== r.id && !bc.palette)) return null;
+    const ca = center(a), cb = center(b);
+    const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y);
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const pp = perp(p1, p2);
+    return (
+      <div key={r.id} data-testid={'deployment-conn-note-handle-' + r.id} title="Drag out to add a note"
+        onPointerDown={(ev) => ann.createFromTarget(r.id, ev)}
+        style={annHandleStyle(ACCENT, { left: 0, top: 0, transform: `translate(${(mid.x + pp.x * -15).toFixed(1)}px,${(mid.y + pp.y * -15).toFixed(1)}px) translate(-50%,-50%)`, zIndex: 6 })}>
+        <NoteIcon />
+      </div>
+    );
+  });
+
   /* ---- render: a node box ---- */
   const renderNode = (n: DeploymentNode) => {
     const g = geom.get(String(n.id))!;
@@ -393,7 +442,7 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
 
     return (
       <div key={n.id} style={boxStyle}
-        onPointerDown={(ev) => bc.nodeDown(String(n.id), ev)}
+        onPointerDown={(ev) => { if ((ev.ctrlKey || ev.metaKey) && tool !== 'pan') { ann.createFromTarget(String(n.id), ev); return; } bc.nodeDown(String(n.id), ev); }}
         onPointerEnter={() => bc.setHover('node:' + String(n.id))} onPointerLeave={() => bc.setHover(null)}
         onDoubleClick={(ev) => ev.stopPropagation()}>
         {faces && (
@@ -424,6 +473,13 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
           <div key={side} onPointerDown={(ev) => bc.portDown(String(n.id), ev)}
             style={{ position: 'absolute', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'crosshair', zIndex: 8, ...ports[side] }} />
         ))}
+        {showPorts && (
+          <div data-testid={'deployment-note-handle-' + n.id} title="Drag out to add a note"
+            onPointerDown={(ev) => ann.createFromTarget(String(n.id), ev)}
+            style={annHandleStyle(ACCENT, { right: -9, bottom: -9 })}>
+            <NoteIcon />
+          </div>
+        )}
 
         <div style={headStyle}>
           {n.stereotype && <div style={{ fontSize: 10.5, fontWeight: 500, color: '#9a5b3f', textAlign: 'center', marginBottom: 1 }}>«{n.stereotype}»</div>}
@@ -461,27 +517,6 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     );
   };
 
-  /* ---- render: a text node ---- */
-  const renderText = (t: DeploymentText) => {
-    const g = textGeom.get(String(t.id))!;
-    const st = textStyleById(styles, t.styleId);
-    const selected = sel?.kind === 'text' && sel.id === String(t.id);
-    const hov = bc.hover === 'text:' + String(t.id);
-    return (
-      <TextNode key={t.id} x={t.x} y={t.y} width={g.w} height={g.h} style={st} content={t.content}
-        accent={ACCENT} selected={selected} hovered={hov} editing={textEdit?.id === Number(t.id)} editValue={textEditVal}
-        panMode={tool === 'pan'}
-        onPointerDown={(ev) => bc.textDown(String(t.id), ev)}
-        onPointerEnter={() => bc.setHover('text:' + String(t.id))}
-        onPointerLeave={() => bc.setHover(null)}
-        onBeginEdit={() => beginTextEdit(Number(t.id))}
-        onEditChange={setTextEditVal}
-        onCommit={commitTextEdit}
-        onCancel={() => setTextEdit(null)}
-        testId={'dep-text-' + t.id} />
-    );
-  };
-
   /* ---- render: a frame container ---- */
   const renderFrame = (f: Frame) => {
     const selected = sel?.kind === 'frame' && sel.id === f.id;
@@ -516,6 +551,13 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
         {selected && (
           <div onPointerDown={(e) => bc.frameResizeDown(f.id, e)} style={{ position: 'absolute', right: -6, bottom: -6, width: 14, height: 14, borderRadius: 4, background: '#fff', border: `2px solid ${FRAME_BLUE}`, cursor: 'nwse-resize', zIndex: 9 }} />
         )}
+        {selected && (
+          <div data-testid={'deployment-frame-note-handle-' + f.id} title="Drag out to add a note"
+            onPointerDown={(e) => ann.createFromTarget(f.id, e)}
+            style={annHandleStyle(ACCENT, { right: 22, bottom: -11 })}>
+            <NoteIcon />
+          </div>
+        )}
       </div>
     );
   };
@@ -547,8 +589,6 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
     <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, opacity: 0.95 }}>
       {bc.palette.kind === 'frame' ? (
         <div style={{ width: 180, height: 110, border: `2px dashed ${FRAME_BLUE}`, background: 'rgba(58,91,255,.06)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: FRAME_BLUE, fontFamily: 'var(--mono)', fontSize: 11 }}>Frame</div>
-      ) : bc.palette.kind === 'text' ? (
-        <div style={{ ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)), padding: '2px 6px', border: `1.5px dashed ${ACCENT}`, borderRadius: 6, background: 'rgba(255,255,255,.85)' }}>Text</div>
       ) : (() => {
         const spec = specForKind(bc.palette.kind);
         return (
@@ -579,10 +619,6 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
       <PaletteTile label="CLOUD" onPointerDown={(e) => bc.startPaletteDrag('cloud', e)}>
         <svg width={30} height={22} viewBox="0 0 32 22" fill="none" stroke="#0891b2" strokeWidth={1.6} strokeLinejoin="round"><path d="M9 19a5 5 0 01-1.3-9.85 6.2 6.2 0 0112-2A5 5 0 0123 19z" /></svg>
       </PaletteTile>
-      <RailLabel>TEXT</RailLabel>
-      <PaletteTile label="TEXT" onPointerDown={(e) => bc.startPaletteDrag('text', e)}>
-        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
-      </PaletteTile>
       <RailLabel>GROUP</RailLabel>
       <PaletteTile label="FRAME" onPointerDown={(e) => bc.startPaletteDrag('frame', e)}>
         <svg width={30} height={24} viewBox="0 0 34 26" fill="none" stroke="#5b6678" strokeWidth={1.5}><rect x="1.5" y="5" width="31" height="19.5" rx="2" strokeDasharray="3.2 2.4" /><path d="M1.5 5 V2.5 H12 V5" /></svg>
@@ -593,19 +629,26 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
   return (
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
-      onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (textEdit) commitTextEdit(); if (relEdit) commitRelLabel(); bc.bgDown(e); }}
-      onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createText(w.x - 28, w.y - 15); bc.setSel({ kind: 'text', id }); }}
+      onFit={fitAll} onAutoLayout={() => void autoLayout()} onArrangeComments={ann.views.length ? ann.rearrange : undefined}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
       world={
         <>
+          {header.show && (
+            <DocHeaderBlock
+              state={header} accent={ACCENT} panMode={tool === 'pan'}
+              onSelect={() => { bc.setSel(null); header.setSelected(true); }}
+              onPanStart={bc.bgDown} testId="deployment-doc-header"
+            />
+          )}
           {framesSorted.map(renderFrame)}
           <svg style={{ position: 'absolute', left: 0, top: 0, width: 100, height: 100, overflow: 'visible', pointerEvents: 'none' }}>
             <DpArrowDefs />
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
           {relLabels}
+          {connHandles}
           {dep.nodes.map(renderNode)}
-          {dep.texts.map(renderText)}
+          {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
             const p1 = rectEdge(a, bc.link.pos.x, bc.link.pos.y);
@@ -615,6 +658,9 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
       }
       hud={
         <>
+          {header.selected && header.show && (
+            <DocHeaderPicker state={header} vp={vp} accent={ACCENT} onPick={setHeaderPos} testId="deployment-header-toolbar" />
+          )}
           {relPill}
           {selNode && (() => {
             const g = geom.get(String(selNode.id))!;
@@ -622,17 +668,6 @@ export function DeploymentEditor({ model, onModel, docName, exportApi }: EditorP
             return (
               <SelectionPill x={(selNode.x + g.w / 2) * vp.scale + vp.tx} y={top * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
                 <PillDelete onClick={() => deleteNode(selNode.id)} title="Delete (Del)" testId="deployment-node-delete" />
-              </SelectionPill>
-            );
-          })()}
-          {selText && (() => {
-            const g = textGeom.get(String(selText.id))!;
-            return (
-              <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-                <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT}
-                  onPick={(id) => setTexts((ts) => ts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)))} />
-                <PillDivider />
-                <PillDelete label="" onClick={() => { setTexts((ts) => ts.filter((t) => String(t.id) !== String(selText.id))); bc.setSel(null); }} title="Delete (Del)" testId="deployment-text-delete" />
               </SelectionPill>
             );
           })()}

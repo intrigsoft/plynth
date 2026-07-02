@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { DiagramModel } from '@plynth/shared';
 import {
-  DEFAULT_STYLE_ID,
   EditableLabel,
   EditorShell,
   PaletteTile,
@@ -14,24 +13,23 @@ import {
   RailDivider,
   RailLabel,
   SelectionPill,
-  StylePicker,
-  TextNode,
   autoArrange,
   bbox,
   center,
-  loadTextStyles,
-  measureText,
   perp,
   rectEdge,
-  textStyleById,
-  textStyleCss,
   useBoxCanvas,
   useViewport,
+  isTypingTarget,
+  headerEdge,
   type ExportFormat,
   type Rect,
   type Tool,
 } from '../engine';
+import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
+import { editorBridge } from '../editor-bridge';
+import { applyFlowchartChanges, flowchartReadSnapshot, type FlowchartChange } from './ai-ops';
 import {
   asFlowchart,
   DEFNAME,
@@ -48,12 +46,23 @@ import {
   type FlowKind,
   type FlowNode,
   type FlowPool,
-  type TextNode as FlowText,
 } from './model';
 import { FcArrowDefs, KindGlyph, NodeShape, shapePath } from './shapes';
-import { runFlowchartExport } from './export';
+import { renderFlowchartExport, runFlowchartExport } from './export';
 
 const ACCENT = '#15803d';
+
+/** Layout geometry (position + measured size per node) for a model. Shared by the
+ *  live render `useMemo` and the headless export path (assistant `export_diagram`),
+ *  so an exported image matches what's on screen. */
+function buildFlowchartGeom(fc: FlowchartModel): Map<string, FlowGeom> {
+  const m = new Map<string, FlowGeom>();
+  for (const n of fc.nodes) {
+    const sz = measureNode(n);
+    m.set(String(n.id), { x: n.x, y: n.y, w: sz.w, h: sz.h, shape: sz.shape });
+  }
+  return m;
+}
 
 type PoolDrag =
   | { t: 'pool-move'; sx: number; sy: number; ox: number; oy: number; nodes: Record<number, { ox: number; oy: number }>; moved: boolean }
@@ -61,7 +70,7 @@ type PoolDrag =
   | { t: 'pool-len'; sx: number; sy: number; olen: number }
   | null;
 
-export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorProps) {
+export function FlowchartEditor({ model, onModel, docName, description, exportApi }: EditorProps) {
   const fc = useMemo(() => asFlowchart(model), [model]);
   const vp = useViewport();
   const [tool, setTool] = useState<Tool>('select');
@@ -70,11 +79,8 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
   const [selLane, setSelLane] = useState<string | null>(null);
   const [laneEdit, setLaneEdit] = useState<string | null>(null);
   const [laneEditVal, setLaneEditVal] = useState('');
-  const [textEdit, setTextEdit] = useState<{ id: number } | null>(null);
-  const [textEditVal, setTextEditVal] = useState('');
   const [relEdit, setRelEdit] = useState<{ id: string } | null>(null);
   const [relEditVal, setRelEditVal] = useState('');
-  const styles = useMemo(() => loadTextStyles(), []);
 
   const idc = useRef(maxNodeId(fc));
   const lanc = useRef(maxLaneSeq(fc));
@@ -88,7 +94,7 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
   const selLaneRef = useRef(selLane);
   selLaneRef.current = selLane;
   const editingRef = useRef(false);
-  editingRef.current = !!edit || !!laneEdit || !!textEdit || !!relEdit;
+  editingRef.current = !!edit || !!laneEdit || !!relEdit;
 
   /** Latest-state mutation — always reads the freshest model. */
   const mutate = useCallback((fn: (m: FlowchartModel) => Partial<FlowchartModel>) => {
@@ -96,25 +102,53 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     onModelRef.current({ ...cur, ...fn(cur) } as DiagramModel);
   }, []);
 
+  /* expose an imperative AI command handle for the persistent assistant's browser
+   * adapter (see editor-bridge). Mirrors `exportApi`: the open editor registers a
+   * handle the root-level adapter calls; a `latest` ref keeps the handle reading
+   * the current model without re-registering on every keystroke. */
+  const aiLatest = useRef({ fc, onModel, docName });
+  aiLatest.current = { fc, onModel, docName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'flowchart',
+        read: () => flowchartReadSnapshot(aiLatest.current.fc, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyFlowchartChanges(aiLatest.current.fc, changes as FlowchartChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent. Recomputes
+        // geometry from the live model (same `buildFlowchartGeom` the render
+        // `useMemo` uses), so the exported image matches what's on screen.
+        exportImage: (fmt) =>
+          renderFlowchartExport(fmt, aiLatest.current.fc, buildFlowchartGeom(aiLatest.current.fc), aiLatest.current.docName),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (the assistant's `rearrange_annotations` tool / the
+        // editor's "Arrange comments" action). Pure cosmetic model edit — the
+        // renderer re-derives each callout box from its target every frame.
+        rearrangeAnnotations: () => {
+          const { fc: cur, onModel: setModel } = aiLatest.current;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
+
   /* geometry */
-  const geom = useMemo(() => {
-    const m = new Map<string, FlowGeom>();
-    for (const n of fc.nodes) {
-      const sz = measureNode(n);
-      m.set(String(n.id), { x: n.x, y: n.y, w: sz.w, h: sz.h, shape: sz.shape });
-    }
-    return m;
-  }, [fc.nodes]);
+  const geom = useMemo(() => buildFlowchartGeom(fc), [fc.nodes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
-  const textGeom = useMemo(() => {
-    const m = new Map<string, Rect>();
-    for (const t of fc.texts) {
-      const sz = measureText(t.content, textStyleById(styles, t.styleId));
-      m.set(String(t.id), { x: t.x, y: t.y, w: sz.w, h: sz.h });
-    }
-    return m;
-  }, [fc.texts, styles]);
-  const textRectOf = useCallback((id: string) => textGeom.get(id) ?? null, [textGeom]);
   const hitNode = useCallback(
     (wx: number, wy: number, exclude?: string) => {
       for (let i = fc.nodes.length - 1; i >= 0; i--) {
@@ -128,15 +162,46 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     [fc.nodes, geom],
   );
 
+  /* Swimlanes are vertical columns: a step dropped/dragged past the pool's left or
+   *  right edge spawns a new lane sized to contain it. Pure (bar the id counter) so
+   *  it can fold into the SAME mutate as the node change — two mutates in one event
+   *  would clobber (mutate reads a per-render ref). Returns the new pool or null. */
+  const laneForDrop = useCallback((pool: FlowPool | null, nx: number, ny: number, nw: number, nh: number): FlowPool | null => {
+    if (!pool || !pool.on || pool.orient !== 'v') return null;
+    const cross = pool.lanes.reduce((a, l) => a + l.size, 0);
+    const left = pool.x, right = pool.x + cross;
+    const top = pool.y, bottom = pool.y + 38 + pool.len;
+    const cy = ny + nh / 2;
+    if (cy < top - 260 || cy > bottom + 260) return null; // ignore drops far above/below the flow
+    const overR = (nx + nw) - right, overL = left - nx;
+    const TRIG = Math.min(60, nw * 0.3), PAD = 28;
+    const col = LANE_COLORS[pool.lanes.length % LANE_COLORS.length];
+    if (overR > TRIG && overR >= overL) {
+      const lane = { id: 'l' + ++lanc.current, label: 'Lane ' + (pool.lanes.length + 1), color: col, size: Math.max(180, Math.round(overR + PAD)) };
+      return { ...pool, lanes: [...pool.lanes, lane] };
+    }
+    if (overL > TRIG) {
+      const size = Math.max(180, Math.round(overL + PAD));
+      const lane = { id: 'l' + ++lanc.current, label: 'Lane ' + (pool.lanes.length + 1), color: col, size };
+      return { ...pool, x: left - size, lanes: [lane, ...pool.lanes] };
+    }
+    return null;
+  }, []);
+
   /* mutators */
   const createNode = useCallback(
     (kind: string, x: number, y: number): string => {
       const id = ++idc.current;
       const k = (KINDS[kind as FlowKind] ? kind : 'process') as FlowKind;
-      mutate((m) => ({ nodes: [...m.nodes, { id, kind: k, name: DEFNAME[k] || 'Step', x, y }] }));
+      const node = { id, kind: k, name: DEFNAME[k] || 'Step', x, y };
+      const sz = measureNode(node);
+      mutate((m) => {
+        const pool = laneForDrop(m.pool, x, y, sz.w, sz.h);
+        return { nodes: [...m.nodes, node], ...(pool ? { pool } : {}) };
+      });
       return String(id);
     },
-    [mutate],
+    [mutate, laneForDrop],
   );
   const addRel = useCallback(
     (from: string, to: string) => {
@@ -150,18 +215,6 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     (id: number) => mutate((m) => ({ nodes: m.nodes.filter((n) => n.id !== id), rels: m.rels.filter((r) => r.from !== id && r.to !== id) })),
     [mutate],
   );
-  /** Create a text node and immediately open its inline editor (palette drop + dbl-click). */
-  const createText = useCallback(
-    (x: number, y: number): string => {
-      const id = ++idc.current;
-      mutate((m) => ({ texts: [...m.texts, { id, x, y, content: 'Text', styleId: DEFAULT_STYLE_ID }] }));
-      setTextEdit({ id });
-      setTextEditVal('Text');
-      return String(id);
-    },
-    [mutate],
-  );
-
   const bc = useBoxCanvas({
     vp,
     tool,
@@ -169,20 +222,49 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     rectOf,
     hitNode,
     onMoveNode: (id, x, y) => mutate((m) => ({ nodes: m.nodes.map((n) => (String(n.id) === id ? { ...n, x, y } : n)) })),
+    // dragging an existing step past the pool edge spawns a lane (vertical columns)
+    onMoveNodeEnd: (id, x, y) => {
+      const n = stateRef.current.fc.nodes.find((nd) => String(nd.id) === id);
+      if (!n) return;
+      const sz = measureNode({ ...n, x, y });
+      mutate((m) => { const pool = laneForDrop(m.pool, x, y, sz.w, sz.h); return pool ? { pool } : {}; });
+    },
     onCreateEdge: addRel,
     onCreateNode: (kind, x, y) => createNode(kind, x, y),
-    onCreateText: (x, y) => createText(x, y),
-    textRectOf,
-    onMoveText: (id, x, y) => mutate((m) => ({ texts: m.texts.map((t) => (String(t.id) === id ? { ...t, x, y } : t)) })),
     onDelete: (sel) => {
       if (!sel) return;
       if (sel.kind === 'node') removeNode(Number(sel.id));
       else if (sel.kind === 'edge') mutate((m) => ({ rels: m.rels.filter((r) => r.id !== sel.id) }));
-      else if (sel.kind === 'text') mutate((m) => ({ texts: m.texts.filter((t) => String(t.id) !== sel.id) }));
     },
-    editing: !!edit || !!laneEdit || !!textEdit || !!relEdit,
+    editing: !!edit || !!laneEdit || !!relEdit,
   });
   const { sel } = bc;
+
+  /* document header (shared engine surface; bounds = nodes + swimlane pool) */
+  const contentBounds = useMemo(() => {
+    const rects: Rect[] = [...geom.values()];
+    if (fc.pool?.on) rects.push(poolBounds(fc.pool));
+    return unionBounds(rects);
+  }, [geom, fc.pool]);
+  const header = useDocHeader({ docName, description, header: fc.header, contentBounds, canvasSel: sel });
+  const setHeaderPos = (position: HeaderPosition) => mutate((m) => ({ header: { position, metadata: m.header?.metadata ?? [] } }));
+
+  /* anchored annotations — shared engine layer (see ERD for the reference wiring) */
+  const annRef = useCallback((target: string): AnnRef | null => {
+    const rel = fc.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), b = geom.get(String(rel.to)); if (a && b) return { x: (a.x + a.w / 2 + b.x + b.w / 2) / 2, y: (a.y + a.h / 2 + b.y + b.h / 2) / 2, w: 0, h: 0, point: true }; }
+    const n = fc.nodes.find((x) => String(x.id) === target);
+    if (n) { const g = geom.get(String(n.id)); if (g) return { x: n.x, y: n.y, w: g.w, h: g.h }; }
+    return null;
+  }, [fc.rels, fc.nodes, geom]);
+  const annObstacles = useMemo(() => [...geom.values()], [geom]);
+  const ann = useAnnotations({
+    annotations: fc.annotations,
+    setAnnotations: (fn) => mutate((m) => ({ annotations: fn(m.annotations) })),
+    annRef, obstacles: annObstacles, bounds: contentBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode: tool === 'pan',
+    toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
+    onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); setSelLane(null); header.setSelected(false); },
+  });
 
   /* selecting a node/edge clears the lane selection */
   useEffect(() => {
@@ -268,16 +350,6 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     }
   }, [fc.pool, mutate, enableLanes]);
 
-  const addLane = useCallback(() => {
-    if (!fc.pool?.on) {
-      enableLanes();
-      return;
-    }
-    const col = LANE_COLORS[fc.pool.lanes.length % LANE_COLORS.length];
-    const id = 'l' + ++lanc.current;
-    mutate((m) => ({ pool: { ...m.pool!, lanes: [...m.pool!.lanes, { id, label: 'Lane ' + (m.pool!.lanes.length + 1), color: col, size: 188 }] } }));
-    setSelLane(id);
-  }, [fc.pool, mutate, enableLanes]);
 
   const removeLane = useCallback(
     (id: string) =>
@@ -292,7 +364,6 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     (id: string, color: string) => mutate((m) => ({ pool: { ...m.pool!, lanes: m.pool!.lanes.map((l) => (l.id === id ? { ...l, color } : l)) } })),
     [mutate],
   );
-  const toggleOrient = useCallback(() => mutate((m) => ({ pool: { ...m.pool!, orient: m.pool!.orient === 'v' ? 'h' : 'v' } })), [mutate]);
 
   const beginLaneRename = useCallback(
     (id: string) => {
@@ -389,8 +460,7 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     };
     const key = (e: KeyboardEvent) => {
       if (editingRef.current) return;
-      const el = e.target as HTMLElement;
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (isTypingTarget(e)) return;
       if (!selLaneRef.current) return;
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
@@ -419,21 +489,6 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     bc.setSel(null);
   };
   const setKind = (id: number, kind: FlowKind) => mutate((m) => ({ nodes: m.nodes.map((n) => (n.id === id ? { ...n, kind } : n)) }));
-
-  /* ---- text-node inline edit -------------------------------------------- */
-  const beginTextEdit = (id: number) => {
-    const t = fc.texts.find((x) => Number(x.id) === id);
-    if (!t) return;
-    setTextEdit({ id });
-    setTextEditVal(t.content);
-    bc.setSel({ kind: 'text', id: String(id) });
-  };
-  const commitTextEdit = () => {
-    if (!textEdit) return;
-    const { id } = textEdit;
-    mutate((m) => ({ texts: m.texts.map((t) => (Number(t.id) === id ? { ...t, content: textEditVal.trim() ? textEditVal : t.content } : t)) }));
-    setTextEdit(null);
-  };
 
   /* ---- connector-label inline edit (double-click a connector) ----------- */
   const beginRelLabel = (id: string) => {
@@ -531,6 +586,27 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     );
   });
 
+  /* connector note handles (drag out → a note on the relationship) */
+  const connHandles = fc.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    if (!((selected || hov) && relEdit?.id !== r.id && !bc.palette)) return null;
+    const ca = center(a), cb = center(b);
+    const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y);
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const pp = perp(p1, p2);
+    return (
+      <div key={r.id} data-testid={'flowchart-conn-note-handle-' + r.id} title="Drag out to add a note"
+        onPointerDown={(ev) => ann.createFromTarget(r.id, ev)}
+        style={annHandleStyle(ACCENT, { left: 0, top: 0, transform: `translate(${(mid.x + pp.x * -15).toFixed(1)}px,${(mid.y + pp.y * -15).toFixed(1)}px) translate(-50%,-50%)`, zIndex: 6 })}>
+        <NoteIcon />
+      </div>
+    );
+  });
+
   /* ---- render: node ------------------------------------------------------ */
   const portPos: Record<string, CSSProperties> = {
     top: { top: -6, left: '50%', marginLeft: -5.5 },
@@ -559,7 +635,7 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
     return (
       <div
         key={n.id}
-        onPointerDown={(e) => bc.nodeDown(String(n.id), e)}
+        onPointerDown={(e) => { if ((e.ctrlKey || e.metaKey) && tool !== 'pan') { ann.createFromTarget(String(n.id), e); return; } bc.nodeDown(String(n.id), e); }}
         onPointerEnter={() => bc.setHover('node:' + String(n.id))}
         onPointerLeave={() => bc.setHover(null)}
         onDoubleClick={(e) => {
@@ -591,40 +667,14 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
           (['top', 'right', 'bottom', 'left'] as const).map((side) => (
             <div key={side} onPointerDown={(e) => bc.portDown(String(n.id), e)} style={{ position: 'absolute', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'crosshair', zIndex: 8, ...portPos[side] }} />
           ))}
+        {showPorts && (
+          <div data-testid={'flowchart-note-handle-' + n.id} title="Drag out to add a note"
+            onPointerDown={(e) => ann.createFromTarget(String(n.id), e)}
+            style={annHandleStyle(ACCENT, { right: -9, bottom: -9 })}>
+            <NoteIcon />
+          </div>
+        )}
       </div>
-    );
-  };
-
-  /* ---- render: text node ------------------------------------------------- */
-  const renderText = (t: FlowText) => {
-    const g = textGeom.get(String(t.id))!;
-    const st = textStyleById(styles, t.styleId);
-    const selected = sel?.kind === 'text' && sel.id === String(t.id);
-    const hov = bc.hover === 'text:' + String(t.id);
-    return (
-      <TextNode
-        key={t.id}
-        x={t.x}
-        y={t.y}
-        width={g.w}
-        height={g.h}
-        style={st}
-        content={t.content}
-        accent={ACCENT}
-        selected={selected}
-        hovered={hov}
-        editing={textEdit?.id === Number(t.id)}
-        editValue={textEditVal}
-        panMode={tool === 'pan'}
-        onPointerDown={(ev) => bc.textDown(String(t.id), ev)}
-        onPointerEnter={() => bc.setHover('text:' + String(t.id))}
-        onPointerLeave={() => bc.setHover(null)}
-        onBeginEdit={() => beginTextEdit(Number(t.id))}
-        onEditChange={setTextEditVal}
-        onCommit={commitTextEdit}
-        onCancel={() => setTextEdit(null)}
-        testId={'fc-text-' + t.id}
-      />
     );
   };
 
@@ -704,19 +754,6 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
 
   /* ---- HUD: toolbars ----------------------------------------------------- */
   const selNode = sel?.kind === 'node' ? fc.nodes.find((n) => n.id === Number(sel.id)) : undefined;
-  const selText = sel?.kind === 'text' ? fc.texts.find((t) => String(t.id) === sel.id) : undefined;
-
-  let textPill: React.ReactNode = null;
-  if (selText) {
-    const g = textGeom.get(String(selText.id))!;
-    textPill = (
-      <SelectionPill x={(selText.x + g.w / 2) * vp.scale + vp.tx} y={selText.y * vp.scale + vp.ty - 12} transform="translate(-50%,-100%)">
-        <StylePicker styles={styles} value={textStyleById(styles, selText.styleId).id} accent={ACCENT} onPick={(id) => mutate((m) => ({ texts: m.texts.map((t) => (String(t.id) === String(selText.id) ? { ...t, styleId: id } : t)) }))} />
-        <PillDivider />
-        <PillDelete label="" onClick={() => { mutate((m) => ({ texts: m.texts.filter((t) => String(t.id) !== String(selText.id)) })); bc.setSel(null); }} title="Delete (Del)" testId="flowchart-text-delete" />
-      </SelectionPill>
-    );
-  }
 
   let kindPill: React.ReactNode = null;
   if (selNode) {
@@ -768,14 +805,10 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
   }
 
   /* ---- palette ghost ----------------------------------------------------- */
-  const ghostK = bc.palette && bc.palette.kind !== 'text' ? KINDS[bc.palette.kind as FlowKind] : undefined;
+  const ghostK = bc.palette ? KINDS[bc.palette.kind as FlowKind] : undefined;
   const ghost =
     bc.palette &&
-    (bc.palette.kind === 'text' ? (
-      <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, opacity: 0.95, ...textStyleCss(textStyleById(styles, DEFAULT_STYLE_ID)), padding: '2px 6px', border: `1.5px dashed ${ACCENT}`, borderRadius: 6, background: 'rgba(255,255,255,.85)' }}>
-        Text
-      </div>
-    ) : ghostK ? (
+    (ghostK ? (
       <div style={{ position: 'fixed', left: bc.palette.cx, top: bc.palette.cy, transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 200, display: 'flex', alignItems: 'center', gap: 7, padding: '8px 12px', border: `1.6px solid ${ACCENT}`, borderRadius: 9, background: '#fff', boxShadow: '0 10px 28px rgba(16,20,27,.2)', opacity: 0.96 }}>
         <KindGlyph iconD1={ghostK.iconD1} iconD2={ghostK.iconD2} color={ghostK.color} size={20} />
         <span style={{ font: '700 12px var(--mono)', color: '#1b2230' }}>{ghostK.label}</span>
@@ -795,27 +828,15 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
         );
       })}
       <RailDivider />
-      <RailLabel>TEXT</RailLabel>
-      <PaletteTile label="TEXT" onPointerDown={(e) => bc.startPaletteDrag('text', e)}>
-        <svg width={24} height={22} viewBox="0 0 24 22" fill="none" stroke="#5b6678" strokeWidth={1.6} strokeLinecap="round"><path d="M5 6h14M12 6v11" /></svg>
-      </PaletteTile>
-      <RailDivider />
       <RailLabel>LANES</RailLabel>
       <button onClick={toggleLanes} title="Toggle swimlanes" style={{ width: 52, height: 50, border: `1px solid ${poolOn ? ACCENT : '#e4e8ee'}`, borderRadius: 10, background: poolOn ? '#15803d12' : '#fafbfc', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, color: poolOn ? ACCENT : '#5b6678' }}>
         <svg width={22} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}><rect x="3" y="4" width="18" height="16" rx="1.6" /><path d="M3 10h18M3 15h18M9 4v16" strokeWidth={1.5} /></svg>
         <span style={{ font: "700 7.5px var(--mono)", letterSpacing: '.3px' }}>{poolOn ? 'ON' : 'OFF'}</span>
       </button>
       {poolOn && (
-        <>
-          <button onClick={addLane} title="Add a lane" style={{ width: 52, height: 36, border: '1px solid #e4e8ee', borderRadius: 10, background: '#fafbfc', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, color: ACCENT, font: "700 8px var(--mono)" }}>
-            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-            LANE
-          </button>
-          <button onClick={toggleOrient} title="Switch lane orientation" style={{ width: 52, height: 36, border: '1px solid #e4e8ee', borderRadius: 10, background: '#fafbfc', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, color: '#5b6678', font: "700 8px var(--mono)" }}>
-            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d={pool!.orient === 'v' ? 'M4 4v16M10 4v16M16 4v16' : 'M4 5h16M4 12h16M4 19h16'} /></svg>
-            {pool!.orient === 'v' ? 'COLS' : 'ROWS'}
-          </button>
-        </>
+        <div style={{ width: 56, font: "600 7px var(--mono)", color: '#aab4c2', textAlign: 'center', lineHeight: 1.3, letterSpacing: '.2px' }}>
+          drop a step past the edge to add a lane
+        </div>
       )}
     </>
   );
@@ -829,28 +850,33 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
       palette={palette}
       onFit={fitAll}
       onAutoLayout={() => void autoLayout()}
+      onArrangeComments={ann.views.length ? ann.rearrange : undefined}
       onCanvasPointerDown={(e) => {
         if (edit) commitEdit();
-        if (textEdit) commitTextEdit();
         if (relEdit) commitRelLabel();
         setSelLane(null);
+        ann.clear();
+        header.setSelected(false);
         bc.bgDown(e);
-      }}
-      onCanvasDoubleClick={(e) => {
-        const w = vp.toWorld(e.clientX, e.clientY);
-        const id = createText(w.x - 28, w.y - 15);
-        bc.setSel({ kind: 'text', id });
       }}
       world={
         <>
+          {header.show && (
+            <DocHeaderBlock
+              state={header} accent={ACCENT} panMode={tool === 'pan'}
+              onSelect={() => { bc.setSel(null); setSelLane(null); header.setSelected(true); }}
+              onPanStart={bc.bgDown} testId="flowchart-doc-header"
+            />
+          )}
           {renderPool()}
           <svg style={{ position: 'absolute', left: 0, top: 0, width: 100, height: 100, overflow: 'visible', pointerEvents: 'none' }}>
             <FcArrowDefs />
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
           {relLabels}
+          {connHandles}
           {fc.nodes.map(renderNode)}
-          {fc.texts.map(renderText)}
+          {ann.layer}
           {bc.link &&
             (() => {
               const a = geom.get(bc.link.fromId);
@@ -867,9 +893,11 @@ export function FlowchartEditor({ model, onModel, docName, exportApi }: EditorPr
       }
       hud={
         <>
+          {header.selected && header.show && (
+            <DocHeaderPicker state={header} vp={vp} accent={ACCENT} onPick={setHeaderPos} testId="flowchart-header-toolbar" />
+          )}
           {kindPill}
           {relPill}
-          {textPill}
           {lanePill}
           {bc.link && (
             <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', background: '#10141b', color: '#e6eaf0', borderRadius: 9, padding: '8px 14px', fontSize: 12.5, zIndex: 26 }}>

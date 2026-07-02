@@ -1,4 +1,5 @@
-import { bbox, center, download, downloadDataUrl, escAttr, escText, NS, perp, rasterize, rectEdge, slugify, type ExportFormat, type Rect } from '../engine';
+import { bbox, center, download, downloadDataUrl, escAttr, escText, NS, perp, rectEdge, renderDiagramFile, type ExportFormat, type Rect } from '../engine';
+import type { RenderedDiagramFile } from '../editor-bridge';
 import { connMarkers, kindOf, stereoOf, type ComponentModel } from './model';
 
 const STROKE = '#2a3344';
@@ -97,11 +98,27 @@ export function buildComponentXml(cm: ComponentModel, geom: Map<string, Rect>): 
   return out.join('\n');
 }
 
+/**
+ * Render the diagram to a downloadable file WITHOUT touching the DOM: returns a
+ * `data:` URL for png/jpg and raw markup for svg/xml. This is the headless half
+ * of export — `runComponentExport` wraps it for the menu's local download, and
+ * the assistant's `export_diagram` intent hands the result to the kit to upload
+ * and surface as a chat download chip.
+ */
+export async function renderComponentExport(
+  fmt: ExportFormat,
+  cm: ComponentModel,
+  geom: Map<string, Rect>,
+  docName: string,
+): Promise<RenderedDiagramFile> {
+  return renderDiagramFile(fmt, docName, {
+    svg: () => buildComponentSvg(cm, geom),
+    xml: () => buildComponentXml(cm, geom),
+  });
+}
+
 export async function runComponentExport(fmt: ExportFormat, cm: ComponentModel, geom: Map<string, Rect>, docName: string): Promise<void> {
-  const name = slugify(docName);
-  if (fmt === 'xml') return download(`${name}.xml`, buildComponentXml(cm, geom), 'application/xml');
-  const { svg, w, h } = buildComponentSvg(cm, geom);
-  if (fmt === 'svg') return download(`${name}.svg`, svg, 'image/svg+xml');
-  const url = await rasterize(svg, { scale: 2.5, jpeg: fmt === 'jpg', bg: '#ffffff', width: w, height: h });
-  downloadDataUrl(`${name}.${fmt}`, url);
+  const file = await renderComponentExport(fmt, cm, geom, docName);
+  if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
+  download(file.filename, file.content, file.mimeType);
 }

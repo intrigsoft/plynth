@@ -1,6 +1,6 @@
 import type { DiagramModel } from '@plynth/shared';
-import type { Frame } from '../engine';
-import { clamp } from '../engine';
+import type { Frame, DocHeader, Annotation } from '../engine';
+import { clamp, DEFAULT_DOC_HEADER } from '../engine';
 
 export type Stereotype = null | 'interface' | 'abstract';
 
@@ -39,11 +39,13 @@ export interface ClassModel {
   classes: ClassNode[];
   rels: ClassRel[];
   frames: Frame[];
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 export function asClass(m: DiagramModel): ClassModel {
   const a = m as Partial<ClassModel>;
-  return { type: 'class', classes: a.classes ?? [], rels: a.rels ?? [], frames: a.frames ?? [] };
+  return { type: 'class', classes: a.classes ?? [], rels: a.rels ?? [], frames: a.frames ?? [], annotations: a.annotations ?? [], header: a.header ?? { ...DEFAULT_DOC_HEADER } };
 }
 
 /* ---- relationship metadata ----------------------------------------------- */
@@ -101,5 +103,6 @@ export function measureClass(c: ClassNode, selected: boolean): { w: number; h: n
 }
 
 export function maxClassId(m: ClassModel): number {
-  return Math.max(100, ...m.classes.map((c) => c.id));
+  const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
+  return Math.max(100, ...m.classes.map((c) => c.id), ...annIds);
 }

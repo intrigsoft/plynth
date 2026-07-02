@@ -1,4 +1,6 @@
 import type { DiagramModel } from '@plynth/shared';
+import type { DocHeader, Annotation } from '../engine';
+import { DEFAULT_DOC_HEADER } from '../engine';
 
 /* =============================================================================
  *  Sequence diagram model. BESPOKE editor — lifelines are positioned by x only,
@@ -59,6 +61,8 @@ export interface SequenceModel {
   messages: SeqMessage[];
   activations: SeqActivation[];
   frames: SeqFrame[];
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 /* ---- layout constants (mirror the prototype) ----------------------------- */
@@ -78,6 +82,8 @@ export function asSequence(m: DiagramModel): SequenceModel {
     messages: a.messages ?? [],
     activations: a.activations ?? [],
     frames: a.frames ?? [],
+    annotations: a.annotations ?? [],
+    header: a.header ?? { ...DEFAULT_DOC_HEADER },
   };
 }
 
@@ -109,6 +115,7 @@ export function maxId(m: SequenceModel): number {
     ...m.activations.map((x) => x.id),
     ...m.frames.map((x) => x.id),
     ...m.frames.flatMap((f) => f.sections.map((s) => s.id)),
+    ...(m.annotations ?? []).map((a) => String(a.id)),
   ];
   for (const id of sids) {
     const d = Number((id.match(/\d+/) ?? ['0'])[0]);

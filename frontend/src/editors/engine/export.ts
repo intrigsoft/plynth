@@ -79,3 +79,22 @@ export type ExportFormat = 'png' | 'jpg' | 'svg' | 'xml';
 export function slugify(name: string): string {
   return name.trim().replace(/[^\w-]+/g, '_').replace(/^_+|_+$/g, '') || 'diagram';
 }
+
+/** Headless render shared by every editor's `render<X>Export`: build the SVG/XML
+ *  string (editor-specific, passed as thunks) and wrap it as a downloadable file
+ *  — a `data:` URL for png/jpg, raw markup for svg/xml. This is the byte-producing
+ *  half of export; `run<X>Export` wraps it for the menu's local download, and the
+ *  assistant's `export_diagram` intent hands the result to the kit to upload as a
+ *  chat download chip. (Typed via the bridge's `RenderedDiagramFile`.) */
+export async function renderDiagramFile(
+  fmt: ExportFormat,
+  docName: string,
+  build: { svg: () => { svg: string; w: number; h: number }; xml: () => string },
+): Promise<{ content: string; filename: string; mimeType: string }> {
+  const name = slugify(docName);
+  if (fmt === 'xml') return { content: build.xml(), filename: `${name}.xml`, mimeType: 'application/xml' };
+  const { svg, w, h } = build.svg();
+  if (fmt === 'svg') return { content: svg, filename: `${name}.svg`, mimeType: 'image/svg+xml' };
+  const url = await rasterize(svg, { scale: 2.5, jpeg: fmt === 'jpg', bg: '#ffffff', width: w, height: h });
+  return { content: url, filename: `${name}.${fmt}`, mimeType: fmt === 'jpg' ? 'image/jpeg' : 'image/png' };
+}

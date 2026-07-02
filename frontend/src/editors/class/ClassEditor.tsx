@@ -28,7 +28,10 @@ import {
   type Rect,
   type Tool,
 } from '../engine';
+import { DocHeaderBlock, DocHeaderPicker, useDocHeader, unionBounds, useAnnotations, annHandleStyle, NoteIcon, headerEdge, type AnnRef, type HeaderPosition } from '../engine';
 import type { EditorProps } from '../types';
+import { editorBridge } from '../editor-bridge';
+import { applyClassChanges, classReadSnapshot, type ClassChange } from './ai-ops';
 import {
   asClass,
   measureClass,
@@ -41,7 +44,7 @@ import {
   type RelType,
 } from './model';
 import { ClassMarkers } from './markers';
-import { runClassExport } from './export';
+import { renderClassExport, runClassExport } from './export';
 
 const ACCENT = '#3a5bff';
 
@@ -60,7 +63,7 @@ const FRAME_ICON: Record<FrameType, string> = {
 
 type Field = { t: 'name' } | { t: 'attr'; i: number } | { t: 'method'; i: number };
 
-export function ClassEditor({ model, onModel, docName, projectName, exportApi }: EditorProps) {
+export function ClassEditor({ model, onModel, docName, description, projectName, exportApi }: EditorProps) {
   const cls = useMemo(() => asClass(model), [model]);
   const vp = useViewport();
   const [tool, setTool] = useState<Tool>('select');
@@ -87,6 +90,57 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
     return m;
   }, [cls.classes]);
   const rectOf = useCallback((id: string) => geom.get(id) ?? null, [geom]);
+
+  /* expose an imperative AI command handle for the persistent assistant's
+   * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
+   * registers a handle the root-level adapter calls; a `latest` ref keeps the
+   * handle reading the current model without re-registering on every keystroke. */
+  const aiLatest = useRef({ cls, geom, onModel, docName, projectName });
+  aiLatest.current = { cls, geom, onModel, docName, projectName };
+  useEffect(
+    () =>
+      editorBridge.register({
+        type: 'class',
+        read: () => classReadSnapshot(aiLatest.current.cls, aiLatest.current.docName),
+        applyChanges: (changes) => {
+          const res = applyClassChanges(aiLatest.current.cls, changes as ClassChange[]);
+          if (res.ok) {
+            aiLatest.current.onModel(res.next as unknown as DiagramModel);
+            return { success: true, data: res.summary };
+          }
+          return { success: false, error: res.error };
+        },
+        // Headless export for the assistant's `export_diagram` intent — same
+        // geometry/SVG pipeline the document menu's export button uses, read from
+        // the live model so the exported image matches what's on screen.
+        exportImage: (fmt) =>
+          renderClassExport(
+            fmt,
+            aiLatest.current.cls,
+            aiLatest.current.geom,
+            aiLatest.current.docName,
+            aiLatest.current.projectName,
+          ),
+        // Drop every manually-dragged offset so notes re-flow to their clean
+        // auto-placed positions (the assistant's `rearrange_annotations` tool /
+        // the editor's "Arrange comments" action). Pure cosmetic model edit —
+        // the renderer re-derives each callout box from its target every frame.
+        rearrangeAnnotations: () => {
+          const { cls: cur, onModel: setModel } = aiLatest.current;
+          const moved = cur.annotations.filter((a) => a.offset).length;
+          if (!cur.annotations.length) {
+            return { success: false, error: 'There are no notes on this diagram to rearrange.' };
+          }
+          setModel({
+            ...cur,
+            annotations: cur.annotations.map(({ offset, ...rest }) => rest),
+          } as unknown as DiagramModel);
+          return { success: true, data: { total: cur.annotations.length, rearranged: moved } };
+        },
+      }),
+    [],
+  );
+
   const frameRectOf = useCallback((id: string) => {
     const f = cls.frames.find((x) => x.id === id);
     return f ? { x: f.x, y: f.y, w: f.w, h: f.h } : null;
@@ -148,14 +202,47 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
       if (!sel) return;
       if (sel.kind === 'node') {
         const nid = Number(sel.id);
-        setClasses((cs) => cs.filter((c) => c.id !== nid));
-        setRels((rs) => rs.filter((r) => r.from !== nid && r.to !== nid));
+        // Atomic: drop the node AND its connectors in ONE patch — two separate
+        // setClasses/setRels calls each spread the same stale `cls`, so the
+        // second clobbers the first and the node survives (only the edge goes).
+        patch({
+          classes: cls.classes.filter((c) => c.id !== nid),
+          rels: cls.rels.filter((r) => r.from !== nid && r.to !== nid),
+        });
       } else if (sel.kind === 'edge') setRels((rs) => rs.filter((r) => r.id !== sel.id));
       else setFrames((fs) => fs.filter((f) => f.id !== sel.id));
     },
     editing: !!edit || !!relEdit,
   });
   const { sel } = bc;
+
+  /* document header (title = docName, description = doc desc; shared engine
+   * surface — we only supply the union of all node / frame rects). */
+  const contentBounds = useMemo(
+    () => unionBounds([...geom.values(), ...cls.frames]),
+    [geom, cls.frames],
+  );
+  const header = useDocHeader({ docName, description, header: cls.header, contentBounds, canvasSel: sel });
+  const setHeaderPos = (position: HeaderPosition) => patch({ header: { position, metadata: cls.header?.metadata ?? [] } });
+
+  /* anchored annotations — shared engine layer (see ERD for the reference wiring) */
+  const annRef = useCallback((target: string): AnnRef | null => {
+    const rel = cls.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), b = geom.get(String(rel.to)); if (a && b) { const ca = center(a), cb = center(b); const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y); return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, w: 0, h: 0, point: true }; } }
+    const fr = cls.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const c = cls.classes.find((x) => String(x.id) === target);
+    if (c) { const g = geom.get(String(c.id)); if (g) return { x: c.x, y: c.y, w: g.w, h: g.h }; }
+    return null;
+  }, [cls.rels, cls.frames, cls.classes, geom]);
+  const annObstacles = useMemo(() => [...geom.values()], [geom]);
+  const ann = useAnnotations({
+    annotations: cls.annotations,
+    setAnnotations: (fn) => patch({ annotations: fn(cls.annotations) }),
+    annRef, obstacles: annObstacles, bounds: contentBounds, titleEdge: header.show ? headerEdge(header.hdr.position) : null, accent: ACCENT, panMode: tool === 'pan',
+    toWorld: (x, y) => vp.toWorld(x, y), nextId: () => 'a' + ++idc.current, canvasSel: sel,
+    onPanStart: bc.bgDown, onSelect: () => { bc.setSel(null); header.setSelected(false); },
+  });
 
   /* fit on first mount */
   const fitAll = useCallback(() => {
@@ -237,7 +324,7 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
   const selRel = sel?.kind === 'edge' ? cls.rels.find((r) => r.id === sel.id) : undefined;
   const selFrame = sel?.kind === 'frame' ? cls.frames.find((f) => f.id === sel.id) : undefined;
   const selNode = sel?.kind === 'node' ? cls.classes.find((c) => String(c.id) === sel.id) : undefined;
-  const deleteNode = (id: number) => { setClasses((cs) => cs.filter((x) => x.id !== id)); setRels((rs) => rs.filter((r) => r.from !== id && r.to !== id)); bc.setSel(null); };
+  const deleteNode = (id: number) => { patch({ classes: cls.classes.filter((x) => x.id !== id), rels: cls.rels.filter((r) => r.from !== id && r.to !== id) }); bc.setSel(null); };
   const setRelType = (type: RelType) => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, type } : r)));
   const reverseRel = () => setRels((rs) => rs.map((r) => (r.id === selRel!.id ? { ...r, from: r.to, to: r.from, fromMult: r.toMult, toMult: r.fromMult } : r)));
   const setFrameType = (type: FrameType) => setFrames((fs) => fs.map((f) => (f.id === selFrame!.id ? { ...f, type } : f)));
@@ -298,6 +385,27 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
     );
   });
 
+  /* connector note handles (drag out → a note on the relationship) */
+  const connHandles = cls.rels.map((r) => {
+    const a = geom.get(String(r.from));
+    const b = geom.get(String(r.to));
+    if (!a || !b) return null;
+    const selected = sel?.kind === 'edge' && sel.id === r.id;
+    const hov = bc.hover === 'rel:' + r.id;
+    if (!((selected || hov) && relEdit?.id !== r.id && !bc.palette)) return null;
+    const ca = center(a), cb = center(b);
+    const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y);
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const pp = perp(p1, p2);
+    return (
+      <div key={r.id} data-testid={'class-conn-note-handle-' + r.id} title="Drag out to add a note"
+        onPointerDown={(ev) => ann.createFromTarget(r.id, ev)}
+        style={annHandleStyle(ACCENT, { left: 0, top: 0, transform: `translate(${(mid.x + pp.x * -15).toFixed(1)}px,${(mid.y + pp.y * -15).toFixed(1)}px) translate(-50%,-50%)`, zIndex: 6 })}>
+        <NoteIcon />
+      </div>
+    );
+  });
+
   /* ---- render a compartment (attrs or methods) ---- */
   const renderComp = (c: ClassNode, kind: 'attr' | 'method'): ReactNode => {
     const rows = kind === 'attr' ? c.attrs : c.methods;
@@ -339,7 +447,7 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
     const editingName = edit?.id === c.id && edit.field.t === 'name';
     return (
       <div key={c.id} style={{ position: 'absolute', transform: `translate(${c.x}px,${c.y}px)`, width: g.w, fontFamily: 'var(--mono)', userSelect: 'none', cursor: tool === 'pan' ? 'grab' : 'move', zIndex: selected ? 5 : hov ? 4 : 2 }}
-        onPointerDown={(ev) => bc.nodeDown(String(c.id), ev)}
+        onPointerDown={(ev) => { if ((ev.ctrlKey || ev.metaKey) && tool !== 'pan') { ann.createFromTarget(String(c.id), ev); return; } bc.nodeDown(String(c.id), ev); }}
         onPointerEnter={() => bc.setHover('node:' + String(c.id))} onPointerLeave={() => bc.setHover(null)}
         onDoubleClick={(ev) => ev.stopPropagation()}>
         <div style={{ background: '#fff', border: `1.6px solid ${selected ? ACCENT : '#1b2230'}`, borderRadius: 7, boxShadow: selected ? '0 0 0 3px rgba(58,91,255,.15)' : '0 2px 8px rgba(16,20,27,.06)' }}>
@@ -364,6 +472,13 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
           };
           return <div key={side} onPointerDown={(ev) => bc.portDown(String(c.id), ev)} style={{ position: 'absolute', width: 11, height: 11, borderRadius: '50%', background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'crosshair', zIndex: 8, ...pos[side] }} />;
         })}
+        {showPorts && (
+          <div data-testid={'class-note-handle-' + c.id} title="Drag out to add a note"
+            onPointerDown={(ev) => ann.createFromTarget(String(c.id), ev)}
+            style={annHandleStyle(ACCENT, { right: -9, bottom: -9 })}>
+            <NoteIcon />
+          </div>
+        )}
       </div>
     );
   };
@@ -429,11 +544,18 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
   return (
     <EditorShell
       vp={vp} tool={tool} onTool={setTool} accent={ACCENT} palette={palette}
-      onFit={fitAll} onAutoLayout={() => void autoLayout()}
-      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); bc.bgDown(e); }}
+      onFit={fitAll} onAutoLayout={() => void autoLayout()} onArrangeComments={ann.views.length ? ann.rearrange : undefined}
+      onCanvasPointerDown={(e) => { if (edit) commitEdit(); if (relEdit) commitRelLabel(); ann.clear(); header.setSelected(false); bc.bgDown(e); }}
       onCanvasDoubleClick={(e) => { const w = vp.toWorld(e.clientX, e.clientY); const id = createClass('class', w.x - 78, w.y - 30); bc.setSel({ kind: 'node', id }); beginEdit(Number(id), { t: 'name' }); }}
       world={
         <>
+          {header.show && (
+            <DocHeaderBlock
+              state={header} accent={ACCENT} panMode={tool === 'pan'}
+              onSelect={() => { bc.setSel(null); header.setSelected(true); }}
+              onPanStart={bc.bgDown} testId="class-doc-header"
+            />
+          )}
           {framesSorted.map((f) => {
             const selected = sel?.kind === 'frame' && sel.id === f.id;
             return (
@@ -443,6 +565,13 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
                   {f.label}
                 </div>
                 {selected && <div onPointerDown={(e) => bc.frameResizeDown(f.id, e)} style={{ position: 'absolute', right: -6, bottom: -6, width: 13, height: 13, background: '#fff', border: `2px solid ${ACCENT}`, cursor: 'nwse-resize' }} />}
+                {selected && (
+                  <div data-testid={'class-frame-note-handle-' + f.id} title="Drag out to add a note"
+                    onPointerDown={(e) => ann.createFromTarget(f.id, e)}
+                    style={annHandleStyle(ACCENT, { right: 22, bottom: -11 })}>
+                    <NoteIcon />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -451,7 +580,9 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
             <g style={{ pointerEvents: 'auto' }}>{connectors}</g>
           </svg>
           {relLabels}
+          {connHandles}
           {cls.classes.map(renderClass)}
+          {ann.layer}
           {bc.link && (() => {
             const a = geom.get(bc.link.fromId); if (!a) return null;
             const p1 = rectEdge(a, bc.link.pos.x, bc.link.pos.y);
@@ -461,6 +592,9 @@ export function ClassEditor({ model, onModel, docName, projectName, exportApi }:
       }
       hud={
         <>
+          {header.selected && header.show && (
+            <DocHeaderPicker state={header} vp={vp} accent={ACCENT} onPick={setHeaderPos} testId="class-header-toolbar" />
+          )}
           {relPill}
           {selNode && (() => {
             const g = geom.get(String(selNode.id))!;

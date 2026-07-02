@@ -41,7 +41,7 @@ export function EditorHost({
     }, 600);
   }, [projectId, doc.id, patchDocLocal]);
 
-  const common = { model, onModel, docName: doc.name, projectName, exportApi };
+  const common = { model, onModel, docName: doc.name, description: doc.desc, projectName, exportApi };
 
   switch (doc.type) {
     case 'erd':

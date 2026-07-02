@@ -7,12 +7,12 @@ import {
   escText,
   NS,
   perp,
-  rasterize,
   rectEdge,
-  slugify,
+  renderDiagramFile,
   type ExportFormat,
   type Rect,
 } from '../engine';
+import type { RenderedDiagramFile } from '../editor-bridge';
 import { KINDS, poolBounds, type FlowchartModel, type FlowGeom } from './model';
 import { shapePath } from './shapes';
 
@@ -76,7 +76,7 @@ export function buildFlowchartSvg(model: FlowchartModel, geom: Map<string, FlowG
     if (!a || !c) continue;
     const p1 = rectEdge(a, center(c).x, center(c).y);
     const p2 = rectEdge(c, center(a).x, center(a).y);
-    out.push(`<path d="M${p1.x} ${p1.y} L${p2.x} ${p2.y}" stroke="#2a3344" stroke-width="1.6" fill="none" marker-end="url(#fc-arrow)"/>`);
+    out.push(`<path d="M${p1.x} ${p1.y} L${p2.x} ${p2.y}" stroke="#2a3344" stroke-width="1.6" fill="none"${r.dashed ? ' stroke-dasharray="6 5"' : ''} marker-end="url(#fc-arrow)"/>`);
     if (r.label) {
       const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
       const pp = perp(p1, p2);
@@ -120,11 +120,27 @@ export function buildFlowchartXml(model: FlowchartModel): string {
   return out.join('\n');
 }
 
+/**
+ * Render the diagram to a downloadable file WITHOUT touching the DOM: a `data:`
+ * URL for png/jpg and raw markup for svg/xml. This is the headless half of
+ * export — `runFlowchartExport` wraps it for the menu's local download, and the
+ * assistant's `export_diagram` intent hands the result to the kit to upload and
+ * surface as a chat download chip.
+ */
+export async function renderFlowchartExport(
+  fmt: ExportFormat,
+  fc: FlowchartModel,
+  geom: Map<string, FlowGeom>,
+  docName: string,
+): Promise<RenderedDiagramFile> {
+  return renderDiagramFile(fmt, docName, {
+    svg: () => buildFlowchartSvg(fc, geom),
+    xml: () => buildFlowchartXml(fc),
+  });
+}
+
 export async function runFlowchartExport(fmt: ExportFormat, model: FlowchartModel, geom: Map<string, FlowGeom>, docName: string): Promise<void> {
-  const name = slugify(docName);
-  if (fmt === 'xml') return download(`${name}.xml`, buildFlowchartXml(model), 'application/xml');
-  const { svg, w, h } = buildFlowchartSvg(model, geom);
-  if (fmt === 'svg') return download(`${name}.svg`, svg, 'image/svg+xml');
-  const url = await rasterize(svg, { scale: 2.5, jpeg: fmt === 'jpg', bg: '#ffffff', width: w, height: h });
-  downloadDataUrl(`${name}.${fmt}`, url);
+  const file = await renderFlowchartExport(fmt, model, geom, docName);
+  if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
+  download(file.filename, file.content, file.mimeType);
 }

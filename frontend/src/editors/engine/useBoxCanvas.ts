@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as RPointerEvent } from 'react';
+import { isTypingTarget } from './dom';
 import type { Rect } from './geometry';
 import type { Tool } from './ui';
 import type { Viewport } from './useViewport';
@@ -15,6 +16,8 @@ export interface BoxCanvasOpts {
   /** topmost node id at a world point (excluding one id) */
   hitNode: (wx: number, wy: number, exclude?: string) => string | null;
   onMoveNode: (id: string, x: number, y: number) => void;
+  /** a node-move drag finished (pointer up after real movement) — final world x,y. */
+  onMoveNodeEnd?: (id: string, x: number, y: number) => void;
   onCreateEdge: (from: string, to: string) => void;
   /** create a node of `kind` at world x,y; return its new id (link-to-empty + palette drop) */
   onCreateNode?: (kind: string, x: number, y: number) => string | null;
@@ -139,7 +142,13 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
       setDragging(null);
       if (!a) return;
       const opt = ref.current;
-      if (a.t === 'link') {
+      if (a.t === 'move') {
+        if (a.moved && opt.onMoveNodeEnd) {
+          const dx = (e.clientX - a.sx) / opt.vp.scale;
+          const dy = (e.clientY - a.sy) / opt.vp.scale;
+          opt.onMoveNodeEnd(a.id, a.ox + dx, a.oy + dy);
+        }
+      } else if (a.t === 'link') {
         const w = opt.vp.toWorld(e.clientX, e.clientY);
         const tgt = opt.hitNode(w.x, w.y, a.fromId);
         if (tgt) {
@@ -166,8 +175,7 @@ export function useBoxCanvas(o: BoxCanvasOpts): BoxCanvas {
     };
     const key = (e: KeyboardEvent) => {
       if (ref.current.editing) return;
-      const el = e.target as HTMLElement;
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (isTypingTarget(e)) return;
       if (e.key === 'v' || e.key === 'V') ref.current.setTool('select');
       else if (e.key === 'h' || e.key === 'H') ref.current.setTool(ref.current.tool === 'pan' ? 'select' : 'pan');
       else if (e.key === ' ') setSpacePan(true);

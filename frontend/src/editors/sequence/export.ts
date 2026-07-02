@@ -1,4 +1,5 @@
-import { download, downloadDataUrl, escAttr, escText, NS, rasterize, slugify, type ExportFormat } from '../engine';
+import { download, downloadDataUrl, escAttr, escText, NS, renderDiagramFile, type ExportFormat } from '../engine';
+import type { RenderedDiagramFile } from '../editor-bridge';
 import { SEQ_MARKER_DEFS } from './markers';
 import { ACT_W, actAt, bottomY, HEAD_TOP, LINE_TOP, measureLife, type SeqMessage, type SequenceModel } from './model';
 
@@ -140,11 +141,27 @@ export function buildSequenceXml(m: SequenceModel): string {
   return out.join('\n');
 }
 
+/**
+ * Render the diagram to a downloadable file WITHOUT touching the DOM: returns a
+ * `data:` URL for png/jpg and raw markup for svg/xml. This is the headless half
+ * of export — `runSequenceExport` wraps it for the menu's local download, and the
+ * assistant's `export_diagram` intent hands the result to the kit to upload and
+ * surface as a chat download chip. (Sequence build fns derive their own geometry,
+ * so no geom argument is threaded through.)
+ */
+export async function renderSequenceExport(
+  fmt: ExportFormat,
+  seq: SequenceModel,
+  docName: string,
+): Promise<RenderedDiagramFile> {
+  return renderDiagramFile(fmt, docName, {
+    svg: () => buildSequenceSvg(seq),
+    xml: () => buildSequenceXml(seq),
+  });
+}
+
 export async function runSequenceExport(fmt: ExportFormat, model: SequenceModel, docName: string): Promise<void> {
-  const name = slugify(docName);
-  if (fmt === 'xml') return download(`${name}.xml`, buildSequenceXml(model), 'application/xml');
-  const { svg, w, h } = buildSequenceSvg(model);
-  if (fmt === 'svg') return download(`${name}.svg`, svg, 'image/svg+xml');
-  const url = await rasterize(svg, { scale: 2.5, jpeg: fmt === 'jpg', bg: '#ffffff', width: w, height: h });
-  downloadDataUrl(`${name}.${fmt}`, url);
+  const file = await renderSequenceExport(fmt, model, docName);
+  if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
+  download(file.filename, file.content, file.mimeType);
 }

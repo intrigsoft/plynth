@@ -1,5 +1,18 @@
 import { bbox, center, download, downloadDataUrl, escAttr, escText, NS, perp, rasterize, rectEdge, roundTopRect, slugify, type ExportFormat, type Rect } from '../engine';
-import type { ErdModel } from './model';
+import type { RenderedDiagramFile } from '../editor-bridge';
+import { measureEntity, type ErdModel } from './model';
+
+/** Layout geometry (position + measured size per entity) for the current model.
+ *  The single source of truth shared by the live editor's render `useMemo` and
+ *  the headless export path, so an exported image matches what's on screen. */
+export function buildErdGeom(erd: ErdModel): Map<string, Rect> {
+  const m = new Map<string, Rect>();
+  for (const e of erd.entities) {
+    const sz = measureEntity(e, false);
+    m.set(String(e.id), { x: e.x, y: e.y, w: sz.w, h: sz.h });
+  }
+  return m;
+}
 
 function markerDefs(): string {
   const s = '#2a3344';
@@ -80,11 +93,29 @@ export function buildErdXml(erd: ErdModel, geom: Map<string, Rect>): string {
   return out.join('\n');
 }
 
-export async function runErdExport(fmt: ExportFormat, erd: ErdModel, geom: Map<string, Rect>, docName: string): Promise<void> {
+/**
+ * Render the diagram to a downloadable file WITHOUT touching the DOM: returns a
+ * `data:` URL for png/jpg and raw markup for svg/xml. This is the headless half
+ * of export — `runErdExport` wraps it for the menu's local download, and the
+ * assistant's `export_diagram` intent hands the result to the kit to upload and
+ * surface as a chat download chip.
+ */
+export async function renderErdExport(
+  fmt: ExportFormat,
+  erd: ErdModel,
+  geom: Map<string, Rect>,
+  docName: string,
+): Promise<RenderedDiagramFile> {
   const name = slugify(docName);
-  if (fmt === 'xml') return download(`${name}.xml`, buildErdXml(erd, geom), 'application/xml');
+  if (fmt === 'xml') return { content: buildErdXml(erd, geom), filename: `${name}.xml`, mimeType: 'application/xml' };
   const { svg, w, h } = buildErdSvg(erd, geom);
-  if (fmt === 'svg') return download(`${name}.svg`, svg, 'image/svg+xml');
+  if (fmt === 'svg') return { content: svg, filename: `${name}.svg`, mimeType: 'image/svg+xml' };
   const url = await rasterize(svg, { scale: 2.5, jpeg: fmt === 'jpg', bg: '#ffffff', width: w, height: h });
-  downloadDataUrl(`${name}.${fmt}`, url);
+  return { content: url, filename: `${name}.${fmt}`, mimeType: fmt === 'jpg' ? 'image/jpeg' : 'image/png' };
+}
+
+export async function runErdExport(fmt: ExportFormat, erd: ErdModel, geom: Map<string, Rect>, docName: string): Promise<void> {
+  const file = await renderErdExport(fmt, erd, geom, docName);
+  if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
+  download(file.filename, file.content, file.mimeType);
 }

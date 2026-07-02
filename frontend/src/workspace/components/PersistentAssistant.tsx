@@ -2,6 +2,10 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/session';
+import { editorBridge, waitForEditorChange } from '../../editors/editor-bridge';
+import type { ExportFormat } from '../../editors/engine';
+import { AI_OPS, type AiOpsEntry } from '../../editors/ai-registry';
+import { workspaceBridge } from '../workspace-bridge';
 
 /**
  * The single, application-wide DioscHub assistant.
@@ -73,6 +77,203 @@ function whenDioscReady(isCancelled: () => boolean, cb: (diosc: DioscFn) => void
 const MUTATING_TOOL = /(?:^|[_.])(create|update|delete|add|remove)(?:[_.]|$)/i;
 
 /**
+ * The browser-adapter intent the assistant uses to edit the diagram on screen.
+ *
+ * One batched, declarative "diff" tool (`browser_apply_changes`) rather than
+ * micro-ops: the LLM reasons through the whole change set and sends an ordered
+ * list of typed edits, which the live editor validates + applies atomically.
+ * Gated by a client-side approval card (Responsibility-First) so the user
+ * reviews the structured diff before the AI touches their diagram.
+ *
+ * Built per open editor from its `AiOpsEntry` (schema + summary/diff come from
+ * the ai-registry; the live `applyChanges` runs through the editor bridge), so
+ * the LLM only ever sees the ops that apply to the diagram on screen.
+ */
+function makeApplyChangesIntent(entry: AiOpsEntry) {
+  return {
+    name: 'apply_changes',
+    description:
+      `Apply a batch of edits to the ${entry.label} currently open on screen. Send an ordered list of typed changes ` +
+      `(${entry.opsHint}); elements are referenced by name. The whole batch is validated and applied atomically, and ` +
+      `shown to the user for approval first. Call browser_read_page to see the current diagram before editing.`,
+    schema: entry.schema,
+    approval: {
+      severity: 'medium' as const,
+      summary: (args: { changes?: unknown[] }) => entry.summarize(args?.changes ?? []),
+      diff: (args: { changes?: unknown[] }) => entry.diff(args?.changes ?? []),
+    },
+    handler: async (args: { changes?: unknown[] }) => {
+      const handle = editorBridge.get();
+      if (!handle?.applyChanges) {
+        return { success: false, error: 'No editable diagram is open. Ask the user to open a diagram, then retry.' };
+      }
+      return handle.applyChanges(args?.changes ?? []);
+    },
+  };
+}
+
+/**
+ * Export the open diagram as a downloadable file delivered into the chat.
+ *
+ * Read-only — it renders the current diagram, mutates nothing — so there's no
+ * approval card. The handler returns the bytes on `file`; the kit uploads them
+ * through the authenticated transport and replaces them with a byte-free fileId
+ * reference (generate_file-shaped) before the result reaches the LLM, which then
+ * renders the standard download chip. Credential-blind holds: the model sees a
+ * fileId reference, never the image bytes.
+ */
+const EXPORT_DIAGRAM_INTENT = {
+  name: 'export_diagram',
+  description:
+    'Export the diagram currently open on screen as a downloadable file and deliver it into the chat as a download chip. Formats: "png" (default), "jpg", "svg", "xml". Use this when the user asks to download, save, or get an image/picture/file of the diagram.',
+  schema: {
+    type: 'object',
+    properties: {
+      format: {
+        type: 'string',
+        enum: ['png', 'jpg', 'svg', 'xml'],
+        description: 'Output format. Defaults to png.',
+      },
+    },
+  },
+  handler: async (args: { format?: ExportFormat }) => {
+    const handle = editorBridge.get();
+    if (!handle?.exportImage) {
+      return { success: false, error: 'No diagram is open to export. Ask the user to open a diagram, then retry.' };
+    }
+    const fmt: ExportFormat = args?.format ?? 'png';
+    try {
+      const file = await handle.exportImage(fmt);
+      // `file` is intercepted + stripped by the kit; the LLM gets `data` only.
+      return { success: true, data: { format: fmt, filename: file.filename }, file };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : 'Export failed' };
+    }
+  },
+};
+
+/**
+ * Tidy the open diagram's callout notes.
+ *
+ * Drops every manually-dragged note offset so the notes re-flow to their clean
+ * auto-placed positions (mirrors the editor's "Arrange comments" action). It
+ * only repositions notes — never their text, targets, or any diagram data — and
+ * a drag instantly restores a custom position, so it carries no approval card.
+ * Host-executed, so no server refetch (see the `browser_` skip in tool:completed).
+ */
+const REARRANGE_ANNOTATIONS_INTENT = {
+  name: 'rearrange_annotations',
+  description:
+    'Tidy the callout notes on the diagram currently open on screen: re-flow every note to a clean auto-placed position next to the element it is pinned to, clearing any positions the user dragged by hand. Use when the user asks to tidy / clean up / re-arrange / auto-layout the notes or comments. Only moves notes — it never changes their text or the diagram itself.',
+  schema: { type: 'object', properties: {} },
+  handler: async () => {
+    const handle = editorBridge.get();
+    if (!handle?.rearrangeAnnotations) {
+      return { success: false, error: 'No diagram is open. Ask the user to open a diagram, then retry.' };
+    }
+    return handle.rearrangeAnnotations();
+  },
+};
+
+/**
+ * The composer `@`-mention provider (host-declared via
+ * `diosc('mentionProvider', fn)`).
+ *
+ * Offers three namespaces, read LIVE each time the popover asks (the kit calls
+ * `query(needle)` fresh per keystroke), so it always reflects current workspace
+ * + open-editor state:
+ *   - `project`   — every project (from the workspace bridge)
+ *   - `diagram`   — every document across every project
+ *   - `<nodeKind>`— the OPEN diagram's own named nodes (entities, lifelines, …),
+ *                   pulled from the live editor snapshot via the ai-registry.
+ *
+ * The host owns filtering (the kit renders whatever we return), so we match the
+ * needle here and cap the list. Wire format is `@[Name](kind:id)`; these custom
+ * kinds pass through as plain text tokens in the message (only `file:` mentions
+ * auto-attach), giving the assistant the element name + a stable id to act on.
+ */
+const MENTION_LIMIT = 40;
+
+interface MentionItem {
+  id: string;
+  name: string;
+  kind: string;
+  description?: string;
+  group?: string;
+}
+
+function queryMentions(needle: string): MentionItem[] {
+  const q = needle.trim().toLowerCase();
+  const match = (name: string) => !q || name.toLowerCase().includes(q);
+  const items: MentionItem[] = [];
+
+  // Open diagram's own nodes first — the most contextually relevant when the
+  // user is actively editing a diagram.
+  const handle = editorBridge.get();
+  if (handle) {
+    const entry = AI_OPS[handle.type];
+    if (entry) {
+      const snap = handle.read() as Record<string, unknown> & { docName?: string };
+      const nodes = snap[entry.nodeKey];
+      if (Array.isArray(nodes)) {
+        for (const n of nodes as Array<{ id?: unknown; name?: unknown; kind?: unknown }>) {
+          if (typeof n?.name !== 'string' || !match(n.name)) continue;
+          items.push({
+            id: String(n.id ?? n.name),
+            name: n.name,
+            kind: entry.nodeKind,
+            description: typeof n.kind === 'string' ? n.kind : undefined,
+            group: `In this ${entry.label}`,
+          });
+        }
+      }
+    }
+  }
+
+  const projects = workspaceBridge.get();
+  for (const p of projects) {
+    if (match(p.name)) {
+      items.push({ id: p.id, name: p.name, kind: 'project', description: p.desc || undefined, group: 'Projects' });
+    }
+    for (const d of p.docs) {
+      if (match(d.name)) {
+        items.push({ id: d.id, name: d.name, kind: 'diagram', description: `${d.type} · ${p.name}`, group: 'Diagrams' });
+      }
+    }
+  }
+
+  return items.slice(0, MENTION_LIMIT);
+}
+
+/**
+ * The host's "browser MCP server": a snapshot reader plus the diagram-editing
+ * intents for whatever editor is open. Registered once; `read()` and `intents`
+ * consult the editor bridge live, so the assistant always sees the current page.
+ */
+const diagramAdapter = {
+  read: async () => {
+    const base = { url: window.location.pathname + window.location.search, title: document.title };
+    const handle = editorBridge.get();
+    if (!handle) return { ...base, description: 'No diagram editor is open.' };
+    const data = handle.read();
+    return { ...base, description: `Open ${data.type} diagram "${data.docName}".`, data };
+  },
+  get intents() {
+    // Advertise only what the open editor actually supports: its typed
+    // apply_changes (from the ai-registry, keyed by diagram type) plus any
+    // capability the registered bridge handle exposes (export / rearrange).
+    const handle = editorBridge.get();
+    if (!handle) return [];
+    const intents: object[] = [];
+    const entry = AI_OPS[handle.type];
+    if (entry) intents.push(makeApplyChangesIntent(entry));
+    if (handle.exportImage) intents.push(EXPORT_DIAGRAM_INTENT);
+    if (handle.rearrangeAnnotations) intents.push(REARRANGE_ANNOTATIONS_INTENT);
+    return intents;
+  },
+};
+
+/**
  * Provides the assistant open/close state to every screen and renders the one
  * persistent panel as a sibling of the routed content. The panel is only
  * rendered while authenticated; once mounted it is never torn down on
@@ -83,7 +284,13 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(true);
 
-  useEffect(() => { ensureLoader(); }, []);
+  // Inject the embed loader only once authenticated — i.e. once `AssistantPanel`
+  // (also gated on `session`) is committing our own <diosc-chat>. Injecting it on
+  // the login page, before our element exists, makes the loader's "does the host
+  // already render a <diosc-chat>?" guard find nothing and auto-mount its own
+  // body-level FAB widget, leaving the app with two widgets. Effects run after
+  // commit, so by the time this fires our element is already in the DOM.
+  useEffect(() => { if (session) ensureLoader(); }, [session]);
 
   // Wire the kit's host hooks once the bundle is up (mirrors Cadence's
   // AssistantPanel). Two things:
@@ -97,19 +304,45 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     const cleanups: Array<() => void> = [];
 
     whenDioscReady(() => cancelled, (diosc) => {
-      diosc('tool', 'navigate', (data: unknown) => {
+      diosc('tool', 'navigate', async (data: unknown) => {
         const d = data as { params?: { path?: string }; path?: string; url?: string };
         const path = d?.params?.path ?? d?.path ?? d?.url;
         if (typeof path !== 'string' || !path) return { error: 'No path provided for navigation' };
-        try { navigate(path); return { navigatedTo: path }; }
-        catch (err) { return { error: err instanceof Error ? err.message : 'Navigation failed' }; }
+        try {
+          // Subscribe BEFORE navigating so we don't miss the new editor's mount,
+          // then resolve only once it has registered its bridge handle. This makes
+          // the kit's post-navigation adapter snapshot reflect the now-open
+          // diagram's tools/schema, so a mid-turn edit targets the right editor.
+          const settled = waitForEditorChange();
+          navigate(path);
+          await settled;
+          return { navigatedTo: path };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : 'Navigation failed' };
+        }
       });
       cleanups.push(() => { try { diosc('tool', 'navigate', null); } catch { /* noop */ } });
+
+      // Declare the host as a "browser MCP server": the assistant can read the
+      // open diagram and edit it via the `browser_apply_changes` intent.
+      diosc('browserAdapter', diagramAdapter);
+      cleanups.push(() => { try { diosc('browserAdapter', null); } catch { /* noop */ } });
+
+      // Offer projects, diagrams and the open diagram's nodes as `@`-mentions in
+      // the composer. `queryMentions` reads the workspace + editor bridges live,
+      // so no re-registration is needed as data changes.
+      diosc('mentionProvider', queryMentions);
+      cleanups.push(() => { try { diosc('mentionProvider', null); } catch { /* noop */ } });
 
       const unsub = diosc('on', 'tool:completed', (data: unknown) => {
         const d = data as { success?: boolean; toolName?: string };
         if (d?.success === false) return;
-        if (MUTATING_TOOL.test(String(d?.toolName ?? ''))) {
+        const name = String(d?.toolName ?? '');
+        // Host-executed browser tools (browser_*) mutate the LIVE editor directly,
+        // so a workspace refetch would clobber unsaved local state — skip them.
+        // Only server-side (MCP) mutations need the UI to re-fetch.
+        if (name.startsWith('browser_')) return;
+        if (MUTATING_TOOL.test(name)) {
           window.dispatchEvent(new Event('plynth:refresh'));
         }
       });

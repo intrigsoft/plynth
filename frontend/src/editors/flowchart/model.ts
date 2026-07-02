@@ -1,6 +1,6 @@
 import type { DiagramModel } from '@plynth/shared';
-import { clamp } from '../engine';
-import type { TextStyleId } from '../engine';
+import { clamp, DEFAULT_DOC_HEADER } from '../engine';
+import type { DocHeader, Annotation } from '../engine';
 
 /* ---- kinds -------------------------------------------------------------- */
 
@@ -62,16 +62,6 @@ export interface FlowRel {
   dashed?: boolean;
 }
 
-/** A free-floating styled text annotation. `styleId` references one of the
- *  project's shared text styles; only the id is stored (see `engine/textstyles`). */
-export interface TextNode {
-  id: string | number;
-  x: number;
-  y: number;
-  content: string;
-  styleId: TextStyleId;
-}
-
 export interface FlowLane {
   id: string;
   label: string;
@@ -92,13 +82,14 @@ export interface FlowchartModel {
   type: 'flowchart';
   nodes: FlowNode[];
   rels: FlowRel[];
-  texts: TextNode[];
   pool: FlowPool | null;
+  annotations: Annotation[];
+  header?: DocHeader;
 }
 
 export function asFlowchart(m: DiagramModel): FlowchartModel {
   const a = m as Partial<FlowchartModel>;
-  return { type: 'flowchart', nodes: a.nodes ?? [], rels: a.rels ?? [], texts: a.texts ?? [], pool: a.pool ?? null };
+  return { type: 'flowchart', nodes: a.nodes ?? [], rels: a.rels ?? [], pool: a.pool ?? null, annotations: a.annotations ?? [], header: a.header ?? { ...DEFAULT_DOC_HEADER } };
 }
 
 export function kindOf(n: FlowNode): KindMeta {
@@ -157,7 +148,8 @@ export function poolBounds(pool: FlowPool): { x: number; y: number; w: number; h
 }
 
 export function maxNodeId(m: FlowchartModel): number {
-  return Math.max(100, ...m.nodes.map((n) => n.id), ...m.texts.map((t) => Number(t.id)));
+  const annIds = (m.annotations ?? []).map((a) => Number(String(a.id).replace(/^a/, '')) || 0);
+  return Math.max(100, ...m.nodes.map((n) => n.id), ...annIds);
 }
 
 /** Highest numeric suffix among existing lane ids (`l3` → 3), for unique ids. */

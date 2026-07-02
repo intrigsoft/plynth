@@ -83,6 +83,7 @@ export function ZoomCluster({
   onOut,
   onFit,
   onAutoLayout,
+  onArrangeComments,
   accent,
 }: {
   pct: number;
@@ -90,6 +91,8 @@ export function ZoomCluster({
   onOut: () => void;
   onFit: () => void;
   onAutoLayout?: () => void;
+  /** Re-flow every note into the gutter ("Arrange comments in the margins"). */
+  onArrangeComments?: () => void;
   accent: string;
 }) {
   const b: CSSProperties = { width: 30, height: 28, border: 'none', background: 'transparent', borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#5b6678' };
@@ -105,6 +108,11 @@ export function ZoomCluster({
       {onAutoLayout && (
         <button style={{ ...b, width: 32, color: accent }} onClick={onAutoLayout} title="Auto-arrange (ELK layered)">
           <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="7" height="6" rx="1" /><rect x="14" y="14" width="7" height="6" rx="1" /><path d="M10 7h4v10" /></svg>
+        </button>
+      )}
+      {onArrangeComments && (
+        <button style={{ ...b, width: 32, color: '#a21caf' }} onClick={onArrangeComments} title="Arrange comments in the margins">
+          <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinejoin="round"><path d="M5 5h14v9l-4 4H5z" strokeLinecap="round" /><path d="M15 18v-4h4" /><path d="M8 10h8M8 13h4" strokeLinecap="round" strokeWidth={1.6} /></svg>
         </button>
       )}
     </div>
