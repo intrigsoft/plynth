@@ -1,8 +1,11 @@
-import { bbox, center, download, downloadDataUrl, escAttr, escText, NS, perp, rectEdge, renderDiagramFile, type ExportFormat, type Rect } from '../engine';
+import { bbox, buildOverlaysSvg, center, download, downloadDataUrl, escAttr, escText, NS, perp, rectEdge, renderDiagramFile, unionBounds, type AnnRef, type ExportFormat, type Rect } from '../engine';
 import type { RenderedDiagramFile } from '../editor-bridge';
 import { connMarkers, kindOf, stereoOf, type ComponentModel } from './model';
 
 const STROKE = '#2a3344';
+
+/** Accent for this editor's annotation layer — kept in sync with ComponentEditor. */
+const ACCENT = '#4f46e5';
 
 function markerDefs(): string {
   return `<defs>
@@ -14,9 +17,26 @@ function markerDefs(): string {
 
 const CLOUD_D = 'M25 60 C10 60 5 48 14 42 C8 30 22 22 31 28 C34 14 56 12 60 26 C74 20 86 32 78 42 C92 46 88 60 74 60 Z';
 
-export function buildComponentSvg(cm: ComponentModel, geom: Map<string, Rect>): { svg: string; w: number; h: number } {
+export function buildComponentSvg(cm: ComponentModel, geom: Map<string, Rect>, docName = '', description = ''): { svg: string; w: number; h: number } {
   const rects = [...cm.components.map((c) => geom.get(String(c.id))!), ...cm.frames.map((f) => ({ x: f.x, y: f.y, w: f.w, h: f.h }))];
-  const b = bbox(rects);
+
+  // shared overlays (document header + anchored notes) — mirrors ComponentEditor's
+  // annRef/obstacles/bounds so the export matches the canvas.
+  const annRef = (target: string): AnnRef | null => {
+    const rel = cm.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), b = geom.get(String(rel.to)); if (a && b) { const ca = center(a), cb = center(b); const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y); return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, w: 0, h: 0, point: true }; } }
+    const fr = cm.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const c = cm.components.find((x) => String(x.id) === target);
+    if (c) { const g = geom.get(String(c.id)); if (g) return { x: c.x, y: c.y, w: g.w, h: g.h }; }
+    return null;
+  };
+  const overlay = buildOverlaysSvg({
+    docName, description, header: cm.header, annotations: cm.annotations,
+    annRef, obstacles: [...geom.values()], contentBounds: unionBounds([...geom.values(), ...cm.frames]), accent: ACCENT,
+  });
+
+  const b = bbox(overlay.bounds ? [...rects, { x: overlay.bounds.minX, y: overlay.bounds.minY, w: overlay.bounds.maxX - overlay.bounds.minX, h: overlay.bounds.maxY - overlay.bounds.minY }] : rects);
   const pad = 44;
   const ox = pad - b.minX;
   const oy = pad - b.minY;
@@ -77,6 +97,9 @@ export function buildComponentSvg(cm: ComponentModel, geom: Map<string, Rect>): 
     out.push(`</g>`);
   }
 
+  // overlays (document header + anchored notes) on top
+  if (overlay.svg) out.push(overlay.svg);
+
   out.push(`</g></svg>`);
   return { svg: out.join('\n'), w: W, h: H };
 }
@@ -110,15 +133,16 @@ export async function renderComponentExport(
   cm: ComponentModel,
   geom: Map<string, Rect>,
   docName: string,
+  description = '',
 ): Promise<RenderedDiagramFile> {
   return renderDiagramFile(fmt, docName, {
-    svg: () => buildComponentSvg(cm, geom),
+    svg: () => buildComponentSvg(cm, geom, docName, description),
     xml: () => buildComponentXml(cm, geom),
   });
 }
 
-export async function runComponentExport(fmt: ExportFormat, cm: ComponentModel, geom: Map<string, Rect>, docName: string): Promise<void> {
-  const file = await renderComponentExport(fmt, cm, geom, docName);
+export async function runComponentExport(fmt: ExportFormat, cm: ComponentModel, geom: Map<string, Rect>, docName: string, description = ''): Promise<void> {
+  const file = await renderComponentExport(fmt, cm, geom, docName, description);
   if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
   download(file.filename, file.content, file.mimeType);
 }

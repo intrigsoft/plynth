@@ -231,8 +231,8 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
    * browser adapter (see editor-bridge). Mirrors ERD: the open editor registers
    * a handle the root-level adapter calls; a `latest` ref keeps the handle
    * reading the current model/geometry without re-registering on every keystroke. */
-  const aiLatest = useRef({ dep, geom, onModel, docName });
-  aiLatest.current = { dep, geom, onModel, docName };
+  const aiLatest = useRef({ dep, geom, onModel, docName, description });
+  aiLatest.current = { dep, geom, onModel, docName, description };
   useEffect(
     () =>
       editorBridge.register({
@@ -249,7 +249,7 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
         // Headless export for the assistant's `export_diagram` intent — uses the
         // same live geometry the on-screen render uses, so the image matches.
         exportImage: (fmt) =>
-          renderDeploymentExport(fmt, aiLatest.current.dep, aiLatest.current.geom, aiLatest.current.docName),
+          renderDeploymentExport(fmt, aiLatest.current.dep, aiLatest.current.geom, aiLatest.current.docName, aiLatest.current.description),
         // Drop every manually-dragged note offset so callouts re-flow to their
         // clean auto-placed positions (assistant's `rearrange_annotations` /
         // the editor's "Arrange comments" action). Pure cosmetic model edit.
@@ -271,9 +271,9 @@ export function DeploymentEditor({ model, onModel, docName, description, exportA
 
   /* export */
   useEffect(() => {
-    exportApi.current = (fmt: ExportFormat) => runDeploymentExport(fmt, dep, geom, docName);
+    exportApi.current = (fmt: ExportFormat) => runDeploymentExport(fmt, dep, geom, docName, description);
     return () => { exportApi.current = null; };
-  }, [dep, geom, docName, exportApi]);
+  }, [dep, geom, docName, description, exportApi]);
 
   /* inline edit */
   const beginEdit = (id: number, field: 'name' | number) => {

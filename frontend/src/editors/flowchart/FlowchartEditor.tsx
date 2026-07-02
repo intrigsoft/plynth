@@ -106,8 +106,8 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
    * adapter (see editor-bridge). Mirrors `exportApi`: the open editor registers a
    * handle the root-level adapter calls; a `latest` ref keeps the handle reading
    * the current model without re-registering on every keystroke. */
-  const aiLatest = useRef({ fc, onModel, docName });
-  aiLatest.current = { fc, onModel, docName };
+  const aiLatest = useRef({ fc, onModel, docName, description });
+  aiLatest.current = { fc, onModel, docName, description };
   useEffect(
     () =>
       editorBridge.register({
@@ -125,7 +125,7 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
         // geometry from the live model (same `buildFlowchartGeom` the render
         // `useMemo` uses), so the exported image matches what's on screen.
         exportImage: (fmt) =>
-          renderFlowchartExport(fmt, aiLatest.current.fc, buildFlowchartGeom(aiLatest.current.fc), aiLatest.current.docName),
+          renderFlowchartExport(fmt, aiLatest.current.fc, buildFlowchartGeom(aiLatest.current.fc), aiLatest.current.docName, aiLatest.current.description),
         // Drop every manually-dragged offset so notes re-flow to their clean
         // auto-placed positions (the assistant's `rearrange_annotations` tool / the
         // editor's "Arrange comments" action). Pure cosmetic model edit — the
@@ -296,11 +296,11 @@ export function FlowchartEditor({ model, onModel, docName, description, exportAp
 
   /* export */
   useEffect(() => {
-    exportApi.current = (fmt: ExportFormat) => void runFlowchartExport(fmt, fc, geom, docName);
+    exportApi.current = (fmt: ExportFormat) => void runFlowchartExport(fmt, fc, geom, docName, description);
     return () => {
       exportApi.current = null;
     };
-  }, [fc, geom, docName, exportApi]);
+  }, [fc, geom, docName, description, exportApi]);
 
   /* inline node-name edit */
   const beginEdit = useCallback(

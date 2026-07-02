@@ -297,16 +297,16 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
 
   /* export registration */
   useEffect(() => {
-    exportApi.current = (fmt: ExportFormat) => void runSequenceExport(fmt, seq, docName);
+    exportApi.current = (fmt: ExportFormat) => void runSequenceExport(fmt, seq, docName, description);
     return () => { exportApi.current = null; };
-  }, [seq, docName, exportApi]);
+  }, [seq, docName, description, exportApi]);
 
   /* expose an imperative AI command handle for the persistent assistant's
    * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
    * registers a handle the root-level adapter calls; a `latest` ref keeps the
    * handle reading the current model without re-registering on every keystroke. */
-  const aiLatest = useRef({ seq, onModel, docName });
-  aiLatest.current = { seq, onModel, docName };
+  const aiLatest = useRef({ seq, onModel, docName, description });
+  aiLatest.current = { seq, onModel, docName, description };
   useEffect(
     () =>
       editorBridge.register({
@@ -323,7 +323,7 @@ export function SequenceEditor({ model, onModel, docName, description, exportApi
         // Headless export for the assistant's `export_diagram` intent — the
         // sequence build fns derive their own geometry from the live model, so
         // the exported image matches what's on screen without reading any ref.
-        exportImage: (fmt) => renderSequenceExport(fmt, aiLatest.current.seq, aiLatest.current.docName),
+        exportImage: (fmt) => renderSequenceExport(fmt, aiLatest.current.seq, aiLatest.current.docName, aiLatest.current.description),
         // Drop every manually-dragged offset so notes re-flow to their clean
         // auto-placed positions (the assistant's `rearrange_annotations` tool /
         // the editor's "Arrange comments" action). Pure cosmetic model edit —
