@@ -206,17 +206,17 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
 
   /* export */
   useEffect(() => {
-    exportApi.current = (fmt: ExportFormat) => runComponentExport(fmt, cm, geom, docName);
+    exportApi.current = (fmt: ExportFormat) => runComponentExport(fmt, cm, geom, docName, description);
     return () => { exportApi.current = null; };
-  }, [cm, geom, docName, exportApi]);
+  }, [cm, geom, docName, description, exportApi]);
 
   /* expose an imperative AI command handle for the persistent assistant's
    * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
    * registers a handle the root-level adapter calls; a `latest` ref keeps the
    * handle reading the current model/geometry without re-registering on every
    * keystroke. */
-  const aiLatest = useRef({ cm, geom, onModel, docName });
-  aiLatest.current = { cm, geom, onModel, docName };
+  const aiLatest = useRef({ cm, geom, onModel, docName, description });
+  aiLatest.current = { cm, geom, onModel, docName, description };
   useEffect(
     () =>
       editorBridge.register({
@@ -233,7 +233,7 @@ export function ComponentEditor({ model, onModel, docName, description, exportAp
         // Headless export for the assistant's `export_diagram` intent. Uses the
         // same live geometry the on-screen render uses, so the image matches.
         exportImage: (fmt) =>
-          renderComponentExport(fmt, aiLatest.current.cm, aiLatest.current.geom, aiLatest.current.docName),
+          renderComponentExport(fmt, aiLatest.current.cm, aiLatest.current.geom, aiLatest.current.docName, aiLatest.current.description),
         // Drop every manually-dragged offset so notes re-flow to their clean
         // auto-placed positions (same effect as the editor's "Arrange comments").
         rearrangeAnnotations: () => {

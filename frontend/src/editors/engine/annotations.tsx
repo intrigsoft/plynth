@@ -47,27 +47,75 @@ export interface AnnPlacement {
 
 let _noteCanvas: HTMLCanvasElement | null = null;
 const NOTE_FONT = "500 12px 'Hanken Grotesk',system-ui,sans-serif";
+/** Note card metrics — shared by the live layout and the headless SVG export so
+ *  an exported note box matches the on-screen one exactly. */
+const NOTE_MAX_CONTENT = 190, NOTE_PAD_X = 8, NOTE_PAD_Y = 3, NOTE_LH = 16, NOTE_BAR = 3;
 
-/** Measure the actual rendered note so the box == the visible text (otherwise the
- *  leader attaches to a phantom fixed-width box, away from the text). */
-export function noteMetrics(text: string): { w: number; h: number } {
-  const maxContent = 190, padX = 8, padY = 3, lh = 16, bar = 3;
+/** Wrap a note's text to the card's max content width, returning the actual
+ *  rendered lines (never empty — falls back to `['Note']`). */
+export function noteLines(text: string): string[] {
   _noteCanvas = _noteCanvas || document.createElement('canvas');
   const ctx = _noteCanvas.getContext('2d');
-  if (!ctx) return { w: 120, h: lh + padY * 2 };
-  ctx.font = NOTE_FONT;
   const words = String(text || 'Note').split(/\s+/).filter(Boolean);
+  if (!ctx) return words.length ? [words.join(' ')] : ['Note'];
+  ctx.font = NOTE_FONT;
   const lines: string[] = [];
   let cur = '';
   for (const w of words) {
     const t = cur ? cur + ' ' + w : w;
-    if (ctx.measureText(t).width > maxContent && cur) { lines.push(cur); cur = w; } else cur = t;
+    if (ctx.measureText(t).width > NOTE_MAX_CONTENT && cur) { lines.push(cur); cur = w; } else cur = t;
   }
   if (cur) lines.push(cur);
   if (!lines.length) lines.push('Note');
+  return lines;
+}
+
+/** Measure the actual rendered note so the box == the visible text (otherwise the
+ *  leader attaches to a phantom fixed-width box, away from the text). */
+export function noteMetrics(text: string): { w: number; h: number } {
+  _noteCanvas = _noteCanvas || document.createElement('canvas');
+  const ctx = _noteCanvas.getContext('2d');
+  if (!ctx) return { w: 120, h: NOTE_LH + NOTE_PAD_Y * 2 };
+  ctx.font = NOTE_FONT;
+  const lines = noteLines(text);
   let widest = 0;
   for (const l of lines) widest = Math.max(widest, ctx.measureText(l).width);
-  return { w: Math.ceil(widest) + padX * 2 + bar, h: lines.length * lh + padY * 2 };
+  return { w: Math.ceil(widest) + NOTE_PAD_X * 2 + NOTE_BAR, h: lines.length * NOTE_LH + NOTE_PAD_Y * 2 };
+}
+
+/** Headless SVG for the annotation layer (leaders + note cards), matching the
+ *  live `annCardStyle`/`annTextStyle` look: a tinted card, an accent bar on the
+ *  connector side, and the wrapped note text. Positioned in world space, so the
+ *  caller drops it inside the diagram's translate group. `escText` is passed in
+ *  to avoid a circular import with the format-agnostic export plumbing. */
+export function annotationsLayerSvg(
+  views: Array<{ an: Annotation; pl: AnnPlacement }>,
+  accent: string,
+  escText: (s: string) => string,
+): string {
+  if (!views.length) return '';
+  const out: string[] = [];
+  // leaders first (under the cards)
+  for (const { pl } of views) out.push(`<path d="${pl.leaderD}" fill="none" stroke="${accent}" stroke-width="1.5"/>`);
+  // cards
+  for (const { an, pl } of views) {
+    const { x, y } = pl.card, w = pl.CW, h = pl.card.h, side = pl.connSide;
+    out.push(`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="rgba(244,246,248,0.82)"/>`);
+    // accent bar on the connector side
+    if (side === 'right') out.push(`<rect x="${(x + w - NOTE_BAR).toFixed(1)}" y="${y.toFixed(1)}" width="${NOTE_BAR}" height="${h.toFixed(1)}" fill="${accent}"/>`);
+    else if (side === 'left') out.push(`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${NOTE_BAR}" height="${h.toFixed(1)}" fill="${accent}"/>`);
+    else if (side === 'top') out.push(`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${NOTE_BAR}" fill="${accent}"/>`);
+    else out.push(`<rect x="${x.toFixed(1)}" y="${(y + h - NOTE_BAR).toFixed(1)}" width="${w.toFixed(1)}" height="${NOTE_BAR}" fill="${accent}"/>`);
+    // text lines
+    const lines = noteLines(an.text);
+    const anchor = side === 'right' ? 'end' : side === 'left' ? 'start' : 'middle';
+    const tx = side === 'right' ? x + w - NOTE_PAD_X - NOTE_BAR : side === 'left' ? x + NOTE_PAD_X + NOTE_BAR : x + w / 2;
+    lines.forEach((ln, i) => {
+      const ty = y + NOTE_PAD_Y + 12 + i * NOTE_LH;
+      out.push(`<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" text-anchor="${anchor}" font-family="Hanken Grotesk, system-ui, sans-serif" font-size="12" font-weight="500" fill="${accent}">${escText(ln)}</text>`);
+    });
+  }
+  return out.join('\n');
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));

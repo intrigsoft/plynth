@@ -95,8 +95,8 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
    * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
    * registers a handle the root-level adapter calls; a `latest` ref keeps the
    * handle reading the current model without re-registering on every keystroke. */
-  const aiLatest = useRef({ cls, geom, onModel, docName, projectName });
-  aiLatest.current = { cls, geom, onModel, docName, projectName };
+  const aiLatest = useRef({ cls, geom, onModel, docName, projectName, description });
+  aiLatest.current = { cls, geom, onModel, docName, projectName, description };
   useEffect(
     () =>
       editorBridge.register({
@@ -120,6 +120,7 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
             aiLatest.current.geom,
             aiLatest.current.docName,
             aiLatest.current.projectName,
+            aiLatest.current.description,
           ),
         // Drop every manually-dragged offset so notes re-flow to their clean
         // auto-placed positions (the assistant's `rearrange_annotations` tool /
@@ -266,9 +267,9 @@ export function ClassEditor({ model, onModel, docName, description, projectName,
 
   /* export */
   useEffect(() => {
-    exportApi.current = (fmt: ExportFormat) => runClassExport(fmt, cls, geom, docName, projectName);
+    exportApi.current = (fmt: ExportFormat) => runClassExport(fmt, cls, geom, docName, projectName, description);
     return () => { exportApi.current = null; };
-  }, [cls, geom, docName, projectName, exportApi]);
+  }, [cls, geom, docName, projectName, description, exportApi]);
 
   /* inline edit */
   const beginEdit = (id: number, field: Field) => {

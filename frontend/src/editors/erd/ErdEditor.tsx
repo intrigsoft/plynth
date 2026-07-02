@@ -71,8 +71,8 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
    * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
    * registers a handle the root-level adapter calls; a `latest` ref keeps the
    * handle reading the current model without re-registering on every keystroke. */
-  const aiLatest = useRef({ erd, onModel, docName });
-  aiLatest.current = { erd, onModel, docName };
+  const aiLatest = useRef({ erd, onModel, docName, description });
+  aiLatest.current = { erd, onModel, docName, description };
   useEffect(
     () =>
       editorBridge.register({
@@ -91,7 +91,7 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
         // uses), so the exported image matches what's on screen without reading
         // any component-local ref.
         exportImage: (fmt) =>
-          renderErdExport(fmt, aiLatest.current.erd, buildErdGeom(aiLatest.current.erd), aiLatest.current.docName),
+          renderErdExport(fmt, aiLatest.current.erd, buildErdGeom(aiLatest.current.erd), aiLatest.current.docName, aiLatest.current.description),
         // Drop every manually-dragged offset so notes re-flow to their clean
         // auto-placed positions (the assistant's `rearrange_annotations` tool /
         // the editor's "Arrange comments" action). Pure cosmetic model edit —
@@ -251,9 +251,9 @@ export function ErdEditor({ model, onModel, docName, description, exportApi }: E
 
   /* export */
   useEffect(() => {
-    exportApi.current = (fmt: ExportFormat) => runErdExport(fmt, erd, geom, docName);
+    exportApi.current = (fmt: ExportFormat) => runErdExport(fmt, erd, geom, docName, description);
     return () => { exportApi.current = null; };
-  }, [erd, geom, docName, exportApi]);
+  }, [erd, geom, docName, description, exportApi]);
 
   /* inline edit */
   const beginEdit = (id: number, field: 'name' | number) => {

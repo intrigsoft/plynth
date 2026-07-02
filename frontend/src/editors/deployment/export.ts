@@ -1,5 +1,6 @@
 import {
   bbox,
+  buildOverlaysSvg,
   center,
   CLOUD_D,
   download,
@@ -11,12 +12,17 @@ import {
   perp,
   rectEdge,
   renderDiagramFile,
+  unionBounds,
+  type AnnRef,
   type ExportFormat,
   type Rect,
 } from '../engine';
 import type { RenderedDiagramFile } from '../editor-bridge';
 import { cylinderPath } from './markers';
 import { DEPTH, shapeOf, type DeploymentModel } from './model';
+
+/** Accent for this editor's annotation layer — kept in sync with DeploymentEditor. */
+const ACCENT = '#c2410c';
 
 function markerDefs(): string {
   return `<defs>
@@ -29,12 +35,29 @@ function paddedRect(r: Rect, is3d: boolean): Rect {
   return is3d ? { x: r.x, y: r.y - DEPTH, w: r.w + DEPTH, h: r.h + DEPTH } : r;
 }
 
-export function buildDeploymentSvg(dep: DeploymentModel, geom: Map<string, Rect>): { svg: string; w: number; h: number } {
+export function buildDeploymentSvg(dep: DeploymentModel, geom: Map<string, Rect>, docName = '', description = ''): { svg: string; w: number; h: number } {
   const rects = [
     ...dep.nodes.map((n) => paddedRect(geom.get(String(n.id))!, shapeOf(n) === 'box')),
     ...dep.frames.map((f) => ({ x: f.x, y: f.y, w: f.w, h: f.h })),
   ];
-  const b = bbox(rects);
+
+  // shared overlays (document header + anchored notes) — mirrors DeploymentEditor's
+  // annRef/obstacles/bounds so the export matches the canvas.
+  const annRef = (target: string): AnnRef | null => {
+    const rel = dep.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), b = geom.get(String(rel.to)); if (a && b) { const ca = center(a), cb = center(b); const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y); return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, w: 0, h: 0, point: true }; } }
+    const fr = dep.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const n = dep.nodes.find((x) => String(x.id) === target);
+    if (n) { const g = geom.get(String(n.id)); if (g) return { x: n.x, y: n.y, w: g.w, h: g.h }; }
+    return null;
+  };
+  const overlay = buildOverlaysSvg({
+    docName, description, header: dep.header, annotations: dep.annotations,
+    annRef, obstacles: [...geom.values()], contentBounds: unionBounds([...geom.values(), ...dep.frames]), accent: ACCENT,
+  });
+
+  const b = bbox(overlay.bounds ? [...rects, { x: overlay.bounds.minX, y: overlay.bounds.minY, w: overlay.bounds.maxX - overlay.bounds.minX, h: overlay.bounds.maxY - overlay.bounds.minY }] : rects);
   const pad = 44;
   const ox = pad - b.minX;
   const oy = pad - b.minY;
@@ -120,6 +143,9 @@ export function buildDeploymentSvg(dep: DeploymentModel, geom: Map<string, Rect>
     out.push(`</g>`);
   }
 
+  // overlays (document header + anchored notes) on top
+  if (overlay.svg) out.push(overlay.svg);
+
   out.push(`</g></svg>`);
   return { svg: out.join('\n'), w: W, h: H };
 }
@@ -154,15 +180,16 @@ export async function renderDeploymentExport(
   dep: DeploymentModel,
   geom: Map<string, Rect>,
   docName: string,
+  description = '',
 ): Promise<RenderedDiagramFile> {
   return renderDiagramFile(fmt, docName, {
-    svg: () => buildDeploymentSvg(dep, geom),
+    svg: () => buildDeploymentSvg(dep, geom, docName, description),
     xml: () => buildDeploymentXml(dep),
   });
 }
 
-export async function runDeploymentExport(fmt: ExportFormat, dep: DeploymentModel, geom: Map<string, Rect>, docName: string): Promise<void> {
-  const file = await renderDeploymentExport(fmt, dep, geom, docName);
+export async function runDeploymentExport(fmt: ExportFormat, dep: DeploymentModel, geom: Map<string, Rect>, docName: string, description = ''): Promise<void> {
+  const file = await renderDeploymentExport(fmt, dep, geom, docName, description);
   if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
   download(file.filename, file.content, file.mimeType);
 }

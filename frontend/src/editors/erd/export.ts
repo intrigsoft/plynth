@@ -1,6 +1,9 @@
-import { bbox, center, download, downloadDataUrl, escAttr, escText, NS, perp, rasterize, rectEdge, roundTopRect, slugify, type ExportFormat, type Rect } from '../engine';
+import { bbox, buildOverlaysSvg, center, download, downloadDataUrl, escAttr, escText, NS, perp, rasterize, rectEdge, roundTopRect, slugify, unionBounds, type AnnRef, type ExportFormat, type Rect } from '../engine';
 import type { RenderedDiagramFile } from '../editor-bridge';
 import { measureEntity, type ErdModel } from './model';
+
+/** Accent for this editor's annotation layer — kept in sync with ErdEditor. */
+const ACCENT = '#a21caf';
 
 /** Layout geometry (position + measured size per entity) for the current model.
  *  The single source of truth shared by the live editor's render `useMemo` and
@@ -24,9 +27,29 @@ function markerDefs(): string {
 </defs>`;
 }
 
-export function buildErdSvg(erd: ErdModel, geom: Map<string, Rect>): { svg: string; w: number; h: number } {
+export function buildErdSvg(erd: ErdModel, geom: Map<string, Rect>, docName = '', description = ''): { svg: string; w: number; h: number } {
   const rects = [...erd.entities.map((e) => geom.get(String(e.id))!), ...erd.frames.map((f) => ({ x: f.x, y: f.y, w: f.w, h: f.h }))];
-  const b = bbox(rects);
+
+  // shared overlays (document header + anchored notes) — mirrors ErdEditor's
+  // annRef/obstacles/bounds so the export matches the canvas.
+  const annRef = (target: string): AnnRef | null => {
+    const rel = erd.rels.find((r) => r.id === target);
+    if (rel) {
+      const a = geom.get(String(rel.from)), b = geom.get(String(rel.to));
+      if (a && b) { const ca = center(a), cb = center(b); const p1 = rectEdge(a, cb.x, cb.y), p2 = rectEdge(b, ca.x, ca.y); return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, w: 0, h: 0, point: true }; }
+    }
+    const fr = erd.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const ent = erd.entities.find((e) => String(e.id) === target);
+    if (ent) { const g = geom.get(String(ent.id)); if (g) return { x: ent.x, y: ent.y, w: g.w, h: g.h }; }
+    return null;
+  };
+  const overlay = buildOverlaysSvg({
+    docName, description, header: erd.header, annotations: erd.annotations,
+    annRef, obstacles: [...geom.values()], contentBounds: unionBounds(rects), accent: ACCENT,
+  });
+
+  const b = bbox(overlay.bounds ? [...rects, { x: overlay.bounds.minX, y: overlay.bounds.minY, w: overlay.bounds.maxX - overlay.bounds.minX, h: overlay.bounds.maxY - overlay.bounds.minY }] : rects);
   const pad = 44;
   const ox = pad - b.minX;
   const oy = pad - b.minY;
@@ -72,6 +95,10 @@ export function buildErdSvg(erd: ErdModel, geom: Map<string, Rect>): { svg: stri
     });
     out.push(`</g>`);
   }
+
+  // overlays (document header + anchored notes) on top
+  if (overlay.svg) out.push(overlay.svg);
+
   out.push(`</g></svg>`);
   return { svg: out.join('\n'), w: W, h: H };
 }
@@ -105,17 +132,18 @@ export async function renderErdExport(
   erd: ErdModel,
   geom: Map<string, Rect>,
   docName: string,
+  description = '',
 ): Promise<RenderedDiagramFile> {
   const name = slugify(docName);
   if (fmt === 'xml') return { content: buildErdXml(erd, geom), filename: `${name}.xml`, mimeType: 'application/xml' };
-  const { svg, w, h } = buildErdSvg(erd, geom);
+  const { svg, w, h } = buildErdSvg(erd, geom, docName, description);
   if (fmt === 'svg') return { content: svg, filename: `${name}.svg`, mimeType: 'image/svg+xml' };
   const url = await rasterize(svg, { scale: 2.5, jpeg: fmt === 'jpg', bg: '#ffffff', width: w, height: h });
   return { content: url, filename: `${name}.${fmt}`, mimeType: fmt === 'jpg' ? 'image/jpeg' : 'image/png' };
 }
 
-export async function runErdExport(fmt: ExportFormat, erd: ErdModel, geom: Map<string, Rect>, docName: string): Promise<void> {
-  const file = await renderErdExport(fmt, erd, geom, docName);
+export async function runErdExport(fmt: ExportFormat, erd: ErdModel, geom: Map<string, Rect>, docName: string, description = ''): Promise<void> {
+  const file = await renderErdExport(fmt, erd, geom, docName, description);
   if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
   download(file.filename, file.content, file.mimeType);
 }

@@ -75,25 +75,30 @@ const META_FONT = "500 11px 'JetBrains Mono',monospace";
 const GAP = 30;
 
 let _canvas: HTMLCanvasElement | null = null;
-/** Count wrapped lines `text` needs at `width` in `font` (honours explicit \n). */
-function wrapCount(text: string, font: string, width: number): number {
-  if (!text) return 0;
+/** Wrap `text` to `width` in `font`, returning the actual rendered lines
+ *  (honours explicit \n). Shared by the live layout and the headless export. */
+export function wrapLines(text: string, font: string, width: number): string[] {
+  if (!text) return [];
   _canvas = _canvas || document.createElement('canvas');
   const ctx = _canvas.getContext('2d');
-  if (!ctx) return String(text).split('\n').length;
+  if (!ctx) return String(text).split('\n');
   ctx.font = font;
-  let lines = 0;
+  const out: string[] = [];
   for (const para of String(text).split('\n')) {
     const words = para.split(/\s+/).filter(Boolean);
-    if (!words.length) { lines += 1; continue; }
+    if (!words.length) { out.push(''); continue; }
     let cur = '';
     for (const w of words) {
       const t = cur ? cur + ' ' + w : w;
-      if (ctx.measureText(t).width > width && cur) { lines++; cur = w; } else cur = t;
+      if (ctx.measureText(t).width > width && cur) { out.push(cur); cur = w; } else cur = t;
     }
-    if (cur) lines++;
+    if (cur) out.push(cur);
   }
-  return lines;
+  return out;
+}
+/** Count wrapped lines `text` needs at `width` in `font` (honours explicit \n). */
+function wrapCount(text: string, font: string, width: number): number {
+  return wrapLines(text, font, width).length;
 }
 
 export function headerMetaList(h: DocHeaderModel): HeaderMeta[] {
@@ -129,6 +134,40 @@ export function placeHeader(h: DocHeaderModel, bounds: HeaderBounds): HeaderPlac
   // top/bottom edge only — left/right slots were removed (mapped by normHeaderPosition)
   const y = pos.startsWith('bottom') ? bounds.y + bounds.h + GAP : bounds.y - GAP - size.h;
   return { x, y, w, h: size.h, align };
+}
+
+/** Headless SVG for the document header block (title + description + metadata),
+ *  matching the live `DocHeaderBlock` fonts/colours. Positioned in world space at
+ *  `pl` (from {@link placeHeader}); the caller drops it inside the diagram's
+ *  translate group. `esc` escapes text for XML (passed in to avoid importing the
+ *  format-agnostic export plumbing). */
+export function docHeaderSvg(h: DocHeaderModel, pl: HeaderPlacement, esc: (s: string) => string): string {
+  const anchor = pl.align === 'right' ? 'end' : pl.align === 'center' ? 'middle' : 'start';
+  const ax = pl.align === 'right' ? pl.x + pl.w : pl.align === 'center' ? pl.x + pl.w / 2 : pl.x;
+  const out: string[] = [];
+  let y = pl.y;
+  const titleLines = h.title ? wrapLines(h.title, TITLE_FONT, pl.w) : [];
+  const descLines = h.description ? wrapLines(h.description, DESC_FONT, pl.w) : [];
+  const meta = headerMetaList(h);
+  titleLines.forEach((ln, i) => {
+    out.push(`<text x="${ax.toFixed(1)}" y="${(y + 23 + i * 30).toFixed(1)}" text-anchor="${anchor}" font-family="Hanken Grotesk, system-ui, sans-serif" font-size="23" font-weight="700" letter-spacing="-0.4" fill="#1b2230">${esc(ln)}</text>`);
+  });
+  if (titleLines.length) y += titleLines.length * 30;
+  if (descLines.length) {
+    if (titleLines.length) y += 7;
+    const dlh = Math.round(14 * 1.45);
+    descLines.forEach((ln, i) => {
+      out.push(`<text x="${ax.toFixed(1)}" y="${(y + 14 + i * dlh).toFixed(1)}" text-anchor="${anchor}" font-family="Hanken Grotesk, system-ui, sans-serif" font-size="14" font-weight="400" fill="#5b6678">${esc(ln)}</text>`);
+    });
+    y += descLines.length * dlh;
+  }
+  if (meta.length) {
+    if (titleLines.length || descLines.length) y += 9;
+    // one mono row: "KEY value   KEY value" — keys uppercased, tint-separated.
+    const parts = meta.map((m) => `${esc(m.key.toUpperCase())}  ${esc(m.value)}`).join('     ');
+    out.push(`<text x="${ax.toFixed(1)}" y="${(y + 11).toFixed(1)}" text-anchor="${anchor}" font-family="JetBrains Mono, monospace" font-size="11" font-weight="500" fill="#5b6678">${parts}</text>`);
+  }
+  return out.join('\n');
 }
 
 export function headerTitleStyle(align: string): CSSProperties {

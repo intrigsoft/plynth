@@ -1,5 +1,6 @@
 import {
   bbox,
+  buildOverlaysSvg,
   center,
   download,
   downloadDataUrl,
@@ -9,12 +10,17 @@ import {
   perp,
   rectEdge,
   renderDiagramFile,
+  unionBounds,
+  type AnnRef,
   type ExportFormat,
   type Rect,
 } from '../engine';
 import type { RenderedDiagramFile } from '../editor-bridge';
 import { KINDS, poolBounds, type FlowchartModel, type FlowGeom } from './model';
 import { shapePath } from './shapes';
+
+/** Accent for this editor's annotation layer — kept in sync with FlowchartEditor. */
+const ACCENT = '#15803d';
 
 function arrowDefs(): string {
   return `<defs>
@@ -51,10 +57,25 @@ function poolSvg(model: FlowchartModel): string {
   return out.join('\n');
 }
 
-export function buildFlowchartSvg(model: FlowchartModel, geom: Map<string, FlowGeom>): { svg: string; w: number; h: number } {
+export function buildFlowchartSvg(model: FlowchartModel, geom: Map<string, FlowGeom>, docName = '', description = ''): { svg: string; w: number; h: number } {
   const rects: Rect[] = model.nodes.map((n) => geom.get(String(n.id))!);
   if (model.pool?.on) rects.push(poolBounds(model.pool));
-  const b = bbox(rects);
+
+  // shared overlays (document header + anchored notes) — mirrors FlowchartEditor's
+  // annRef/obstacles/bounds so the export matches the canvas.
+  const annRef = (target: string): AnnRef | null => {
+    const rel = model.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), c = geom.get(String(rel.to)); if (a && c) return { x: (a.x + a.w / 2 + c.x + c.w / 2) / 2, y: (a.y + a.h / 2 + c.y + c.h / 2) / 2, w: 0, h: 0, point: true }; }
+    const n = model.nodes.find((x) => String(x.id) === target);
+    if (n) { const g = geom.get(String(n.id)); if (g) return { x: n.x, y: n.y, w: g.w, h: g.h }; }
+    return null;
+  };
+  const overlay = buildOverlaysSvg({
+    docName, description, header: model.header, annotations: model.annotations,
+    annRef, obstacles: [...geom.values()], contentBounds: unionBounds(rects), accent: ACCENT,
+  });
+
+  const b = bbox(overlay.bounds ? [...rects, { x: overlay.bounds.minX, y: overlay.bounds.minY, w: overlay.bounds.maxX - overlay.bounds.minX, h: overlay.bounds.maxY - overlay.bounds.minY }] : rects);
   const pad = 44;
   const ox = pad - b.minX;
   const oy = pad - b.minY;
@@ -96,6 +117,9 @@ export function buildFlowchartSvg(model: FlowchartModel, geom: Map<string, FlowG
     out.push(`</g>`);
   }
 
+  // overlays (document header + anchored notes) on top
+  if (overlay.svg) out.push(overlay.svg);
+
   out.push(`</g></svg>`);
   return { svg: out.join('\n'), w: W, h: H };
 }
@@ -132,15 +156,16 @@ export async function renderFlowchartExport(
   fc: FlowchartModel,
   geom: Map<string, FlowGeom>,
   docName: string,
+  description = '',
 ): Promise<RenderedDiagramFile> {
   return renderDiagramFile(fmt, docName, {
-    svg: () => buildFlowchartSvg(fc, geom),
+    svg: () => buildFlowchartSvg(fc, geom, docName, description),
     xml: () => buildFlowchartXml(fc),
   });
 }
 
-export async function runFlowchartExport(fmt: ExportFormat, model: FlowchartModel, geom: Map<string, FlowGeom>, docName: string): Promise<void> {
-  const file = await renderFlowchartExport(fmt, model, geom, docName);
+export async function runFlowchartExport(fmt: ExportFormat, model: FlowchartModel, geom: Map<string, FlowGeom>, docName: string, description = ''): Promise<void> {
+  const file = await renderFlowchartExport(fmt, model, geom, docName, description);
   if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
   download(file.filename, file.content, file.mimeType);
 }

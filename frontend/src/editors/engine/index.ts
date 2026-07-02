@@ -6,6 +6,7 @@ export * from './doc-header';
 export * from './annotations';
 export * from './ai-shared';
 export * from './export';
+export * from './overlays-export';
 export * from './elk';
 export * from './useViewport';
 export * from './useBoxCanvas';

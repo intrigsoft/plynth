@@ -88,8 +88,8 @@ export function UseCaseEditor({ model, onModel, docName, description, exportApi 
    * browser adapter (see editor-bridge). Mirrors `exportApi`: the open editor
    * registers a handle the root-level adapter calls; a `latest` ref keeps the
    * handle reading the current model without re-registering on every keystroke. */
-  const aiLatest = useRef({ uc, geom, onModel, docName });
-  aiLatest.current = { uc, geom, onModel, docName };
+  const aiLatest = useRef({ uc, geom, onModel, docName, description });
+  aiLatest.current = { uc, geom, onModel, docName, description };
   useEffect(
     () =>
       editorBridge.register({
@@ -107,7 +107,7 @@ export function UseCaseEditor({ model, onModel, docName, description, exportApi 
         // live model + geometry (same `geom` the render path builds), so the
         // exported image matches what's on screen without reading any DOM ref.
         exportImage: (fmt) =>
-          renderUseCaseExport(fmt, aiLatest.current.uc, aiLatest.current.geom, aiLatest.current.docName),
+          renderUseCaseExport(fmt, aiLatest.current.uc, aiLatest.current.geom, aiLatest.current.docName, aiLatest.current.description),
         // Drop every manually-dragged offset so notes re-flow to their clean
         // auto-placed positions (the assistant's `rearrange_annotations` tool /
         // the editor's "Arrange comments" action). Pure cosmetic model edit.
@@ -240,9 +240,9 @@ export function UseCaseEditor({ model, onModel, docName, description, exportApi 
 
   /* export */
   useEffect(() => {
-    exportApi.current = (fmt: ExportFormat) => runUseCaseExport(fmt, uc, geom, docName);
+    exportApi.current = (fmt: ExportFormat) => runUseCaseExport(fmt, uc, geom, docName, description);
     return () => { exportApi.current = null; };
-  }, [uc, geom, docName, exportApi]);
+  }, [uc, geom, docName, description, exportApi]);
 
   /* inline node-name edit */
   const beginEdit = (id: number) => {

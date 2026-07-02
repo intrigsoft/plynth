@@ -1,7 +1,10 @@
-import { download, downloadDataUrl, escAttr, escText, NS, renderDiagramFile, type ExportFormat } from '../engine';
+import { buildOverlaysSvg, download, downloadDataUrl, escAttr, escText, NS, renderDiagramFile, unionBounds, type AnnRef, type ExportFormat } from '../engine';
 import type { RenderedDiagramFile } from '../editor-bridge';
 import { SEQ_MARKER_DEFS } from './markers';
-import { ACT_W, actAt, bottomY, HEAD_TOP, LINE_TOP, measureLife, type SeqMessage, type SequenceModel } from './model';
+import { ACT_W, actAt, bottomY, HEAD_H, HEAD_TOP, LINE_TOP, measureLife, type SeqMessage, type SequenceModel } from './model';
+
+/** Accent for this editor's annotation layer — kept in sync with SequenceEditor. */
+const ACCENT = '#0e9488';
 
 interface Bounds {
   minX: number;
@@ -53,13 +56,49 @@ function messagePath(m: SequenceModel, msg: SeqMessage): string | null {
   return `M${sx.toFixed(1)} ${y.toFixed(1)} L${ex.toFixed(1)} ${y.toFixed(1)}`;
 }
 
-export function buildSequenceSvg(m: SequenceModel): { svg: string; w: number; h: number } {
+export function buildSequenceSvg(m: SequenceModel, docName = '', description = ''): { svg: string; w: number; h: number } {
   const b = bounds(m);
+
+  // shared overlays (document header + anchored notes) — mirrors SequenceEditor's
+  // annRef/obstacles/contentBounds so the export matches the canvas. `b.bottom`
+  // is `bottomY(m)`, the same value the editor feeds into these expressions.
+  const annRef = (target: string): AnnRef | null => {
+    const ll = m.lifelines.find((l) => String(l.id) === target);
+    if (ll) { const w = measureLife(ll).w; return { x: ll.x - w / 2, y: HEAD_TOP, w, h: HEAD_H }; }
+    const msg = m.messages.find((mm) => mm.id === target);
+    if (msg) { const a = m.lifelines.find((l) => l.id === msg.from), bl = m.lifelines.find((l) => l.id === msg.to); if (a && bl) { const x = msg.self ? a.x + 58 : (a.x + bl.x) / 2; return { x, y: msg.y, w: 0, h: 0, point: true }; } }
+    const fr = m.frames.find((f) => f.id === target);
+    if (fr) return { x: fr.x, y: fr.y, w: fr.w, h: fr.h };
+    const ac = m.activations.find((a) => a.id === target);
+    if (ac) { const al = m.lifelines.find((l) => l.id === ac.lifelineId); if (al) return { x: al.x - ACT_W / 2, y: ac.top, w: ACT_W, h: Math.max(8, ac.bottom - ac.top) }; }
+    return null;
+  };
+  const obstacles = m.lifelines.map((l) => { const w = measureLife(l).w; return { x: l.x - w / 2, y: HEAD_TOP, w, h: HEAD_H }; });
+  const contentBounds = unionBounds([
+    ...m.lifelines.map((l) => { const w = measureLife(l).w; return { x: l.x - w / 2, y: HEAD_TOP, w, h: b.bottom - HEAD_TOP }; }),
+    ...m.frames.map((f) => ({ x: f.x, y: f.y, w: f.w, h: f.h })),
+  ]);
+  const overlay = buildOverlaysSvg({
+    docName, description, header: m.header, annotations: m.annotations,
+    annRef, obstacles, contentBounds, accent: ACCENT,
+  });
+
+  // Grow the diagram extent to include the overlay bounds. Sequence lays out from
+  // its own (minX..maxX, HEAD_TOP..bottomY) box; the header/notes sit in the outer
+  // gutter (often above or left of the lifelines, i.e. beyond that box), so expand
+  // both the origin offset and W/H so nothing clips.
+  let minX = b.minX, minY = b.top, maxX = b.maxX, maxY = b.bottom;
+  if (overlay.bounds) {
+    minX = Math.min(minX, overlay.bounds.minX);
+    minY = Math.min(minY, overlay.bounds.minY);
+    maxX = Math.max(maxX, overlay.bounds.maxX);
+    maxY = Math.max(maxY, overlay.bounds.maxY);
+  }
   const pad = 48;
-  const ox = pad - b.minX;
-  const oy = pad - b.top;
-  const W = b.maxX - b.minX + pad * 2;
-  const H = b.bottom - b.top + pad * 2;
+  const ox = pad - minX;
+  const oy = pad - minY;
+  const W = maxX - minX + pad * 2;
+  const H = maxY - minY + pad * 2;
   const lineH = b.bottom - LINE_TOP;
   const out: string[] = [];
   out.push(`<svg xmlns="${NS}" width="${Math.round(W)}" height="${Math.round(H)}" viewBox="0 0 ${Math.round(W)} ${Math.round(H)}">`);
@@ -117,6 +156,9 @@ export function buildSequenceSvg(m: SequenceModel): { svg: string; w: number; h:
     out.push(`<text x="${lx.toFixed(1)}" y="${(msg.y - 6).toFixed(1)}" text-anchor="${anchor}" font-family="JetBrains Mono" font-size="12" font-weight="500" fill="#3a4453">${escText(msg.name)}</text>`);
   }
 
+  // overlays (document header + anchored notes) on top
+  if (overlay.svg) out.push(overlay.svg);
+
   out.push(`</g></svg>`);
   return { svg: out.join('\n'), w: W, h: H };
 }
@@ -153,15 +195,16 @@ export async function renderSequenceExport(
   fmt: ExportFormat,
   seq: SequenceModel,
   docName: string,
+  description = '',
 ): Promise<RenderedDiagramFile> {
   return renderDiagramFile(fmt, docName, {
-    svg: () => buildSequenceSvg(seq),
+    svg: () => buildSequenceSvg(seq, docName, description),
     xml: () => buildSequenceXml(seq),
   });
 }
 
-export async function runSequenceExport(fmt: ExportFormat, model: SequenceModel, docName: string): Promise<void> {
-  const file = await renderSequenceExport(fmt, model, docName);
+export async function runSequenceExport(fmt: ExportFormat, model: SequenceModel, docName: string, description = ''): Promise<void> {
+  const file = await renderSequenceExport(fmt, model, docName, description);
   if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
   download(file.filename, file.content, file.mimeType);
 }

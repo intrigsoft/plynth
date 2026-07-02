@@ -1,5 +1,6 @@
 import {
   bbox,
+  buildOverlaysSvg,
   center,
   download,
   downloadDataUrl,
@@ -8,6 +9,8 @@ import {
   escText,
   NS,
   renderDiagramFile,
+  unionBounds,
+  type AnnRef,
   type ExportFormat,
   type Rect,
 } from '../engine';
@@ -17,6 +20,9 @@ import { KIND_COLOR, rtypeOf, type UseCaseModel } from './model';
 
 const EDGE = '#2a3344';
 
+/** Accent for this editor's annotation layer — kept in sync with UseCaseEditor. */
+const ACCENT = '#0891b2';
+
 function markerDefs(): string {
   return `<defs>
   <marker id="uc-open" markerWidth="14" markerHeight="14" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M2 1.5 L11 6 L2 10.5" fill="none" stroke="${EDGE}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
@@ -24,10 +30,25 @@ function markerDefs(): string {
 </defs>`;
 }
 
-export function buildUseCaseSvg(uc: UseCaseModel, geom: Map<string, Rect>): { svg: string; w: number; h: number } {
+export function buildUseCaseSvg(uc: UseCaseModel, geom: Map<string, Rect>, docName = '', description = ''): { svg: string; w: number; h: number } {
   const rects = [...uc.nodes.map((n) => geom.get(String(n.id))!)];
   if (uc.system?.on) rects.push({ x: uc.system.x, y: uc.system.y, w: uc.system.w, h: uc.system.h });
-  const b = bbox(rects);
+
+  // shared overlays (document header + anchored notes) — mirrors UseCaseEditor's
+  // annRef/obstacles/bounds so the export matches the canvas.
+  const annRef = (target: string): AnnRef | null => {
+    const rel = uc.rels.find((r) => r.id === target);
+    if (rel) { const a = geom.get(String(rel.from)), c = geom.get(String(rel.to)); if (a && c) return { x: (a.x + a.w / 2 + c.x + c.w / 2) / 2, y: (a.y + a.h / 2 + c.y + c.h / 2) / 2, w: 0, h: 0, point: true }; }
+    const n = uc.nodes.find((x) => String(x.id) === target);
+    if (n) { const g = geom.get(String(n.id)); if (g) return { x: n.x, y: n.y, w: g.w, h: g.h }; }
+    return null;
+  };
+  const overlay = buildOverlaysSvg({
+    docName, description, header: uc.header, annotations: uc.annotations,
+    annRef, obstacles: [...geom.values()], contentBounds: unionBounds(rects), accent: ACCENT,
+  });
+
+  const b = bbox(overlay.bounds ? [...rects, { x: overlay.bounds.minX, y: overlay.bounds.minY, w: overlay.bounds.maxX - overlay.bounds.minX, h: overlay.bounds.maxY - overlay.bounds.minY }] : rects);
   const pad = 48;
   const ox = pad - b.minX;
   const oy = pad - b.minY;
@@ -85,6 +106,9 @@ export function buildUseCaseSvg(uc: UseCaseModel, geom: Map<string, Rect>): { sv
     }
   }
 
+  // overlays (document header + anchored notes) on top
+  if (overlay.svg) out.push(overlay.svg);
+
   out.push(`</g></svg>`);
   return { svg: out.join('\n'), w: W, h: H };
 }
@@ -126,15 +150,16 @@ export async function renderUseCaseExport(
   uc: UseCaseModel,
   geom: Map<string, Rect>,
   docName: string,
+  description = '',
 ): Promise<RenderedDiagramFile> {
   return renderDiagramFile(fmt, docName, {
-    svg: () => buildUseCaseSvg(uc, geom),
+    svg: () => buildUseCaseSvg(uc, geom, docName, description),
     xml: () => buildUseCaseXml(uc, geom),
   });
 }
 
-export async function runUseCaseExport(fmt: ExportFormat, uc: UseCaseModel, geom: Map<string, Rect>, docName: string): Promise<void> {
-  const file = await renderUseCaseExport(fmt, uc, geom, docName);
+export async function runUseCaseExport(fmt: ExportFormat, uc: UseCaseModel, geom: Map<string, Rect>, docName: string, description = ''): Promise<void> {
+  const file = await renderUseCaseExport(fmt, uc, geom, docName, description);
   if (file.content.startsWith('data:')) return downloadDataUrl(file.filename, file.content);
   download(file.filename, file.content, file.mimeType);
 }
